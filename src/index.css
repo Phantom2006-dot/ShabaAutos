@@ -1,0 +1,391 @@
+@import "tailwindcss";
+
+:root {
+  --shabaautos-forest: #12492f;
+  --shabaautos-leaf: #158047;
+  --shabaautos-text: #26372c;
+  --shabaautos-line: #e4e9e3;
+  --shabaautos-bg: rgba(251, 252, 250, 0.96);
+}
+
+/* Global resets to eliminate horizontal scrolling artifacts */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: clip;
+  min-height: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#root {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+/* Editorial Serif Italic for luxury automotive headings like "A better way to move." */
+.font-editorial-italic {
+  font-family: 'Playfair Display', 'Instrument Serif', Georgia, serif;
+  font-style: italic;
+}
+
+/* Base navbar styles */
+.shabaautos-navbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  border-bottom: 1px solid var(--shabaautos-line);
+  background: var(--shabaautos-bg);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  font-family: 'Plus Jakarta Sans', 'Manrope', sans-serif;
+  width: 100%;
+  max-width: 100%;
+}
+
+.shabaautos-navbar-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  max-width: 1440px;
+  margin: 0 auto;
+  min-height: 56px;
+  padding: 0 1rem;
+  gap: 0.75rem;
+}
+
+@media (min-width: 640px) {
+  .shabaautos-navbar-inner {
+    padding: 0 1.25rem;
+    gap: 1rem;
+  }
+}
+
+@media (min-width: 768px) {
+  .shabaautos-navbar-inner {
+    min-height: 60px;
+    padding: 0 1.5rem;
+  }
+}
+
+@media (min-width: 1024px) {
+  .shabaautos-navbar-inner {
+    min-height: 64px;
+    padding: 0 1.75rem;
+    gap: 1.25rem;
+  }
+}
+
+.shabaautos-brand {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.shabaautos-nav {
+  display: flex;
+  align-self: stretch;
+  align-items: stretch;
+  gap: 2px;
+  margin-left: 8px;
+}
+
+@media (min-width: 1280px) {
+  .shabaautos-nav {
+    gap: 6px;
+    margin-left: 16px;
+  }
+}
+
+.shabaautos-nav-link {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: #303c35;
+  font-family: 'Manrope', sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.15s ease;
+  min-height: 44px;
+}
+
+@media (min-width: 1280px) {
+  .shabaautos-nav-link {
+    padding: 0 12px;
+    font-size: 13px;
+  }
+}
+
+.shabaautos-nav-link:hover {
+  color: var(--shabaautos-forest);
+}
+
+.shabaautos-nav-link.active {
+  color: var(--shabaautos-forest);
+  font-weight: 700;
+}
+
+.shabaautos-nav-indicator {
+  position: absolute;
+  bottom: 0;
+  left: 8px;
+  right: 8px;
+  height: 2.5px;
+  background: var(--shabaautos-forest);
+  border-radius: 999px;
+}
+
+@media (min-width: 1280px) {
+  .shabaautos-nav-indicator {
+    left: 12px;
+    right: 12px;
+  }
+}
+
+.shabaautos-header-contact {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  color: var(--shabaautos-text);
+  font-family: 'Manrope', sans-serif;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+@media (min-width: 1280px) {
+  .shabaautos-header-contact {
+    gap: 14px;
+  }
+}
+
+.shabaautos-contact-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--shabaautos-text);
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  transition: color 0.15s ease;
+  min-height: 44px;
+  padding: 0 4px;
+}
+
+.shabaautos-contact-btn:hover {
+  color: var(--shabaautos-forest);
+}
+
+.shabaautos-badge-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--shabaautos-text);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.15s ease;
+  min-height: 44px;
+  padding: 0 6px;
+}
+
+.shabaautos-badge-btn:hover {
+  color: var(--shabaautos-forest);
+}
+
+.shabaautos-badge-count {
+  display: grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--shabaautos-forest);
+  color: white;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.shabaautos-signin {
+  min-width: 84px;
+  height: 36px;
+  padding: 0 16px;
+  border: 1px solid #7c9d8b;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--shabaautos-forest);
+  font-family: 'Manrope', sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.shabaautos-signin:hover {
+  background: var(--shabaautos-forest);
+  border-color: var(--shabaautos-forest);
+  color: #ffffff;
+  box-shadow: 0 2px 6px rgba(18, 73, 47, 0.2);
+}
+
+/* Custom Dropdowns */
+.shabaautos-dropdown {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+}
+
+.shabaautos-dropdown-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 50;
+  background: #ffffff;
+  border: 1px solid var(--shabaautos-line);
+  border-radius: 12px;
+  box-shadow: 0 10px 30px -5px rgba(18, 73, 47, 0.12), 0 4px 12px rgba(0, 0, 0, 0.05);
+  padding: 8px;
+  animation: dropdownFadeIn 0.16s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  transform-origin: top left;
+}
+
+@keyframes dropdownFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.shabaautos-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 0;
+  background: transparent;
+  color: #2b3b32;
+  font-family: 'Manrope', sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.12s ease;
+  white-space: nowrap;
+}
+
+.shabaautos-dropdown-item:hover {
+  background: #f0f6f2;
+  color: var(--shabaautos-forest);
+  transform: translateX(2px);
+}
+
+.shabaautos-dropdown-item.active {
+  background: #e4efe8;
+  color: var(--shabaautos-forest);
+  font-weight: 700;
+}
+
+/* Custom Select Dropdown arrows */
+select,
+.shaba-select {
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  -moz-appearance: none !important;
+  background-color: #ffffff;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2312492f' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-position: right 0.75rem center !important;
+  background-size: 14px 14px !important;
+  padding-right: 2.25rem !important;
+  font-family: 'Manrope', sans-serif !important;
+  border: 1px solid #d4ded8;
+  border-radius: 8px;
+  color: #1f2937;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease-in-out;
+}
+
+select:hover,
+.shaba-select:hover {
+  border-color: #158047;
+  background-color: #fbfdfc;
+}
+
+select:focus,
+.shaba-select:focus {
+  outline: none !important;
+  border-color: #12492f !important;
+  box-shadow: 0 0 0 3px rgba(18, 73, 47, 0.15) !important;
+}
+
+select:disabled,
+.shaba-select:disabled {
+  background-color: #f3f4f6 !important;
+  color: #9ca3af !important;
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+select option {
+  background: #ffffff;
+  color: #1f2937;
+  padding: 8px 12px;
+  font-family: 'Manrope', sans-serif;
+  font-weight: 500;
+}
+
+/* Dark variant for dark sections */
+select.dark-select,
+.dark-select {
+  background-color: rgba(15, 23, 42, 0.95) !important;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2334d399' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") !important;
+  border-color: rgba(255, 255, 255, 0.2) !important;
+  color: #ffffff !important;
+}
+
+select.dark-select:hover,
+.dark-select:hover {
+  border-color: #34d399 !important;
+  background-color: rgba(26, 38, 66, 0.95) !important;
+}
+
+select.dark-select:focus,
+.dark-select:focus {
+  border-color: #34d399 !important;
+  box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.25) !important;
+}
+
+select.dark-select option,
+.dark-select option {
+  background: #0f172a !important;
+  color: #ffffff !important;
+}
+
