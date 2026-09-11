@@ -5,7 +5,7 @@ import path from 'node:path';
 let dbInstance: DatabaseSync | null = null;
 
 export function getDatabasePath(): string {
-  const customPath = process.env.DATABASE_PATH;
+  const customPath = process.env.DATABASE_PATH || process.env.SQLITE_DB_PATH;
   if (customPath) return customPath;
   const dataDir = path.join(process.cwd(), 'data');
   if (!fs.existsSync(dataDir)) {
