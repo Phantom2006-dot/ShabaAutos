@@ -14,14 +14,18 @@ interface MobileBottomNavProps {
   savedCount?: number;
   compareCount?: number;
   isLoggedIn?: boolean;
+  isMenuOpen?: boolean;
   onOpenMenu?: () => void;
+  menuButtonRef?: React.Ref<HTMLButtonElement>;
 }
 
 export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
   currentScreen,
   onNavigate,
   savedCount = 0,
+  isMenuOpen = false,
   onOpenMenu,
+  menuButtonRef,
 }) => {
   // Tab mapping & active logic
   const isHomeActive = currentScreen === 'home';
@@ -32,27 +36,26 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
   const isRentActive = currentScreen === 'rent-car';
   const isImportActive =
     currentScreen === 'import-landing' || currentScreen === 'import-form';
-
-  const handleTabClick = (screen: ScreenId) => {
-    onNavigate(screen);
-  };
+  const isMenuActive = isMenuOpen;
 
   return (
     <nav
-      className="fixed bottom-0 left-0 right-0 z-40 md:hidden bg-white/95 backdrop-blur-xl border-t border-slate-200/90 shadow-[0_-8px_30px_rgba(0,0,0,0.08)] px-2 pt-1.5 pb-[max(env(safe-area-inset-bottom),0.5rem)]"
+      id="mobile-bottom-nav"
+      className="fixed bottom-0 left-0 right-0 z-40 md:hidden bg-white/95 backdrop-blur-xl border-t border-slate-200/90 shadow-[0_-8px_30px_rgba(0,0,0,0.08)] px-1 pt-1 pb-[max(env(safe-area-inset-bottom),0.5rem)] min-h-[58px] w-full max-w-full overflow-hidden"
       aria-label="Mobile application bottom navigation"
     >
-      <div className="grid grid-cols-5 items-center max-w-md mx-auto">
+      <div className="grid grid-cols-5 items-center max-w-md mx-auto w-full">
         {/* Tab 1: Home */}
         <button
           type="button"
-          onClick={() => handleTabClick('home')}
-          className={`flex flex-col items-center justify-center py-1 rounded-xl transition-all cursor-pointer min-h-[48px] active:scale-95 ${
+          onClick={() => onNavigate('home')}
+          className={`flex flex-col items-center justify-center py-1 rounded-xl transition-all cursor-pointer min-h-[48px] min-w-[44px] active:scale-95 ${
             isHomeActive
               ? 'text-[#0e7c3a]'
               : 'text-slate-500 hover:text-slate-800'
           }`}
-          aria-label="Go to Home"
+          aria-label="Home"
+          aria-current={isHomeActive ? 'page' : undefined}
         >
           <div className="relative">
             <div
@@ -76,16 +79,17 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
           </span>
         </button>
 
-        {/* Tab 2: Buy Cars */}
+        {/* Tab 2: Buy */}
         <button
           type="button"
-          onClick={() => handleTabClick('buy-cars')}
-          className={`flex flex-col items-center justify-center py-1 rounded-xl transition-all cursor-pointer min-h-[48px] active:scale-95 ${
+          onClick={() => onNavigate('buy-cars')}
+          className={`flex flex-col items-center justify-center py-1 rounded-xl transition-all cursor-pointer min-h-[48px] min-w-[44px] active:scale-95 ${
             isBuyActive
               ? 'text-[#0e7c3a]'
               : 'text-slate-500 hover:text-slate-800'
           }`}
-          aria-label="Browse Cars for Sale"
+          aria-label="Buy"
+          aria-current={isBuyActive ? 'page' : undefined}
         >
           <div className="relative">
             <div
@@ -112,13 +116,14 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
         {/* Tab 3: Rent */}
         <button
           type="button"
-          onClick={() => handleTabClick('rent-car')}
-          className={`flex flex-col items-center justify-center py-1 rounded-xl transition-all cursor-pointer min-h-[48px] active:scale-95 ${
+          onClick={() => onNavigate('rent-car')}
+          className={`flex flex-col items-center justify-center py-1 rounded-xl transition-all cursor-pointer min-h-[48px] min-w-[44px] active:scale-95 ${
             isRentActive
               ? 'text-[#0e7c3a]'
               : 'text-slate-500 hover:text-slate-800'
           }`}
-          aria-label="Rent a Car"
+          aria-label="Rent"
+          aria-current={isRentActive ? 'page' : undefined}
         >
           <div className="relative">
             <div
@@ -142,16 +147,17 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
           </span>
         </button>
 
-        {/* Tab 4: Import US */}
+        {/* Tab 4: Import */}
         <button
           type="button"
-          onClick={() => handleTabClick('import-landing')}
-          className={`flex flex-col items-center justify-center py-1 rounded-xl transition-all cursor-pointer min-h-[48px] active:scale-95 ${
+          onClick={() => onNavigate('import-landing')}
+          className={`flex flex-col items-center justify-center py-1 rounded-xl transition-all cursor-pointer min-h-[48px] min-w-[44px] active:scale-95 ${
             isImportActive
               ? 'text-[#0e7c3a]'
               : 'text-slate-500 hover:text-slate-800'
           }`}
-          aria-label="Import from USA"
+          aria-label="Import"
+          aria-current={isImportActive ? 'page' : undefined}
         >
           <div className="relative">
             <div
@@ -175,28 +181,46 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
           </span>
         </button>
 
-        {/* Tab 5: Menu / Full Directory */}
+        {/* Tab 5: Menu */}
         <button
+          ref={menuButtonRef}
           type="button"
           onClick={() => {
             if (onOpenMenu) {
               onOpenMenu();
             }
           }}
-          className="flex flex-col items-center justify-center py-1 rounded-xl transition-all cursor-pointer min-h-[48px] active:scale-95 text-slate-500 hover:text-slate-800"
-          aria-label="Open Full Navigation Menu"
+          className={`flex flex-col items-center justify-center py-1 rounded-xl transition-all cursor-pointer min-h-[48px] min-w-[44px] active:scale-95 ${
+            isMenuActive
+              ? 'text-[#0e7c3a]'
+              : 'text-slate-500 hover:text-slate-800'
+          }`}
+          aria-label="Open Navigation Menu"
+          aria-expanded={isMenuActive}
         >
           <div className="relative">
-            <div className="w-9 h-7 rounded-full flex items-center justify-center transition-colors bg-transparent hover:bg-emerald-100/50">
-              <Menu className="w-5 h-5 stroke-2 text-slate-600" />
+            <div
+              className={`w-9 h-7 rounded-full flex items-center justify-center transition-colors ${
+                isMenuActive ? 'bg-emerald-100/70' : 'bg-transparent hover:bg-emerald-100/50'
+              }`}
+            >
+              <Menu
+                className={`w-5 h-5 transition-transform ${
+                  isMenuActive ? 'stroke-[2.5px] scale-105 text-[#0e7c3a]' : 'stroke-2 text-slate-600'
+                }`}
+              />
             </div>
             {savedCount > 0 && (
-              <span className="absolute -top-0.5 -right-1 bg-[#12492f] text-white text-[9px] font-black rounded-full w-4 h-4 flex items-center justify-center shadow-xs">
+              <span className="absolute -top-0.5 right-0 bg-[#12492f] text-white text-[9px] font-black rounded-full min-w-[15px] h-[15px] px-0.5 flex items-center justify-center shadow-xs">
                 {savedCount}
               </span>
             )}
           </div>
-          <span className="text-[10px] tracking-tight leading-tight mt-0.5 whitespace-nowrap font-bold text-slate-700">
+          <span
+            className={`text-[10px] tracking-tight leading-tight mt-0.5 whitespace-nowrap ${
+              isMenuActive ? 'font-black text-[#0e7c3a]' : 'font-bold text-slate-700'
+            }`}
+          >
             Menu
           </span>
         </button>

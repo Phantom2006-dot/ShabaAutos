@@ -35,19 +35,44 @@ export interface VehicleFilterParams {
   maxPrice?: number;
   minYear?: number;
   maxYear?: number;
+  minMileage?: number;
+  maxMileage?: number;
   city?: string;
   verified?: boolean;
   status?: string;
   search?: string;
+  sort?: string;
   limit?: number;
   offset?: number;
+}
+
+export interface VehicleFacets {
+  makes: string[];
+  models: string[];
+  bodyTypes: string[];
+  conditions: string[];
+  transmissions: string[];
+  fuelTypes: string[];
+  priceBounds: { min: number; max: number };
+  yearBounds: { min: number; max: number };
+  mileageBounds: { min: number; max: number };
 }
 
 export interface IUserRepository {
   findById(id: string): Promise<User | null>;
   findByEmail(email: string): Promise<User | null>;
+  findByClerkId(clerkId: string): Promise<User | null>;
+  upsertClerkUser(data: {
+    clerkId: string;
+    email: string;
+    fullName: string;
+    phone?: string;
+    avatarUrl?: string;
+    role?: 'customer' | 'staff' | 'admin';
+  }): Promise<User>;
   create(user: Omit<User, 'id' | 'createdAt' | 'updatedAt'>): Promise<User>;
   update(id: string, updates: Partial<User>): Promise<User | null>;
+  deleteByClerkId?(clerkId: string): Promise<boolean>;
   list(limit?: number, offset?: number): Promise<User[]>;
 }
 
@@ -62,6 +87,7 @@ export interface IVehicleRepository {
   setImages(vehicleId: string, imageUrls: string[]): Promise<void>;
   getSeller(sellerId: string): Promise<DealershipSeller | null>;
   createSeller(seller: Omit<DealershipSeller, 'createdAt' | 'updatedAt'>): Promise<DealershipSeller>;
+  getFacets(): Promise<VehicleFacets>;
 }
 
 export interface IOfferRepository {

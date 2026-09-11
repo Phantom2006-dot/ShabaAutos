@@ -68,6 +68,7 @@ export class PostgresUserRepository implements IUserRepository {
   private mapUser(r: any): User {
     return {
       id: r.id,
+      clerkId: r.clerk_id || undefined,
       email: r.email,
       passwordHash: r.password_hash,
       fullName: r.full_name,
@@ -81,13 +82,73 @@ export class PostgresUserRepository implements IUserRepository {
   }
 
   async findById(id: string): Promise<User | null> {
-    const res = await this.pool.query('SELECT * FROM users WHERE id = $1', [id]);
+    const res = await this.pool.query('SELECT * FROM users WHERE id = $1 OR clerk_id = $1', [id]);
     return res.rows[0] ? this.mapUser(res.rows[0]) : null;
   }
 
   async findByEmail(email: string): Promise<User | null> {
     const res = await this.pool.query('SELECT * FROM users WHERE LOWER(email) = LOWER($1)', [email]);
     return res.rows[0] ? this.mapUser(res.rows[0]) : null;
+  }
+
+  async findByClerkId(clerkId: string): Promise<User | null> {
+    const res = await this.pool.query('SELECT * FROM users WHERE clerk_id = $1 OR id = $1', [clerkId]);
+    return res.rows[0] ? this.mapUser(res.rows[0]) : null;
+  }
+
+  async upsertClerkUser(data: {
+    clerkId: string;
+    email: string;
+    fullName: string;
+    phone?: string;
+    avatarUrl?: string;
+    role?: 'customer' | 'staff' | 'admin';
+  }): Promise<User> {
+    const existing = await this.findByClerkId(data.clerkId) || await this.findByEmail(data.email);
+    const now = new Date().toISOString();
+
+    if (existing) {
+      const q = `
+        UPDATE users
+        SET clerk_id = $1, email = $2, full_name = $3, phone = COALESCE($4, phone), avatar_url = COALESCE($5, avatar_url), role = COALESCE($6, role), updated_at = $7
+        WHERE id = $8
+        RETURNING *
+      `;
+      const res = await this.pool.query(q, [
+        data.clerkId,
+        data.email.toLowerCase().trim(),
+        data.fullName || existing.fullName,
+        data.phone !== undefined ? data.phone : null,
+        data.avatarUrl || null,
+        data.role || null,
+        now,
+        existing.id,
+      ]);
+      return this.mapUser(res.rows[0]);
+    }
+
+    const id = data.clerkId.startsWith('user_') ? data.clerkId : `usr_${crypto.randomUUID()}`;
+    const q = `
+      INSERT INTO users (id, clerk_id, email, password_hash, full_name, phone, role, status, avatar_url, created_at, updated_at)
+      VALUES ($1, $2, $3, '', $4, $5, $6, 'active', $7, $8, $8)
+      RETURNING *
+    `;
+    const res = await this.pool.query(q, [
+      id,
+      data.clerkId,
+      data.email.toLowerCase().trim(),
+      data.fullName || 'Valued Client',
+      data.phone || '',
+      data.role || 'customer',
+      data.avatarUrl || null,
+      now,
+    ]);
+    return this.mapUser(res.rows[0]);
+  }
+
+  async deleteByClerkId(clerkId: string): Promise<boolean> {
+    const res = await this.pool.query('DELETE FROM users WHERE clerk_id = $1 OR id = $1', [clerkId]);
+    return (res.rowCount ?? 0) > 0;
   }
 
   async create(user: Omit<User, 'id' | 'createdAt' | 'updatedAt'>): Promise<User> {
@@ -210,20 +271,20 @@ export class PostgresVehicleRepository implements IVehicleRepository {
       conditions.push(`LOWER(model) LIKE LOWER($${idx++})`);
       values.push(`%${filters.model}%`);
     }
-    if (filters?.condition && filters.condition !== 'All Conditions') {
-      conditions.push(`condition = $${idx++}`);
+    if (filters?.condition && filters.condition !== 'All Conditions' && filters.condition !== 'All') {
+      conditions.push(`LOWER(condition) = LOWER($${idx++})`);
       values.push(filters.condition);
     }
-    if (filters?.bodyType && filters.bodyType !== 'All Body Types') {
-      conditions.push(`body_type = $${idx++}`);
+    if (filters?.bodyType && filters.bodyType !== 'All Body Types' && filters.bodyType !== 'All') {
+      conditions.push(`LOWER(body_type) = LOWER($${idx++})`);
       values.push(filters.bodyType);
     }
-    if (filters?.transmission && filters.transmission !== 'All Transmissions') {
-      conditions.push(`transmission = $${idx++}`);
+    if (filters?.transmission && filters.transmission !== 'All Transmissions' && filters.transmission !== 'All') {
+      conditions.push(`LOWER(transmission) = LOWER($${idx++})`);
       values.push(filters.transmission);
     }
-    if (filters?.fuelType && filters.fuelType !== 'All Fuels') {
-      conditions.push(`fuel_type = $${idx++}`);
+    if (filters?.fuelType && filters.fuelType !== 'All Fuels' && filters.fuelType !== 'All') {
+      conditions.push(`LOWER(fuel_type) = LOWER($${idx++})`);
       values.push(filters.fuelType);
     }
     if (filters?.minPrice !== undefined) {
@@ -242,6 +303,14 @@ export class PostgresVehicleRepository implements IVehicleRepository {
       conditions.push(`year <= $${idx++}`);
       values.push(filters.maxYear);
     }
+    if (filters?.minMileage !== undefined) {
+      conditions.push(`mileage >= $${idx++}`);
+      values.push(filters.minMileage);
+    }
+    if (filters?.maxMileage !== undefined) {
+      conditions.push(`mileage <= $${idx++}`);
+      values.push(filters.maxMileage);
+    }
     if (filters?.city) {
       conditions.push(`(LOWER(city) = LOWER($${idx}) OR LOWER(location) LIKE LOWER($${idx++}))`);
       values.push(`%${filters.city}%`);
@@ -254,11 +323,11 @@ export class PostgresVehicleRepository implements IVehicleRepository {
       conditions.push(`status = $${idx++}`);
       values.push(filters.status);
     } else {
-      conditions.push(`status = 'available'`);
+      conditions.push(`status != 'delisted'`);
     }
     if (filters?.search) {
       conditions.push(
-        `(LOWER(make) LIKE LOWER($${idx}) OR LOWER(model) LIKE LOWER($${idx}) OR LOWER(description) LIKE LOWER($${idx++}))`
+        `(LOWER(make) LIKE LOWER($${idx}) OR LOWER(model) LIKE LOWER($${idx}) OR LOWER(description) LIKE LOWER($${idx}) OR LOWER(location) LIKE LOWER($${idx++}))`
       );
       values.push(`%${filters.search}%`);
     }
@@ -271,10 +340,27 @@ export class PostgresVehicleRepository implements IVehicleRepository {
     const limit = Math.max(1, filters?.limit || 50);
     const offset = Math.max(0, filters?.offset || 0);
 
+    let orderBy = 'created_at DESC, id DESC';
+    if (filters?.sort === 'price-asc') {
+      orderBy = 'price_ngn ASC, id DESC';
+    } else if (filters?.sort === 'price-desc') {
+      orderBy = 'price_ngn DESC, id DESC';
+    } else if (filters?.sort === 'mileage-asc') {
+      orderBy = 'mileage ASC, id DESC';
+    } else if (filters?.sort === 'mileage-desc') {
+      orderBy = 'mileage DESC, id DESC';
+    } else if (filters?.sort === 'year-desc') {
+      orderBy = 'year DESC, price_ngn ASC, id DESC';
+    } else if (filters?.sort === 'year-asc') {
+      orderBy = 'year ASC, price_ngn ASC, id DESC';
+    } else if (filters?.sort === 'newest') {
+      orderBy = 'created_at DESC, id DESC';
+    }
+
     const query = `
       SELECT * FROM vehicles
       ${where}
-      ORDER BY year DESC, price_ngn ASC
+      ORDER BY ${orderBy}
       LIMIT $${idx++} OFFSET $${idx++}
     `;
     const rowsRes = await this.pool.query(query, [...values, limit, offset]);
@@ -282,6 +368,48 @@ export class PostgresVehicleRepository implements IVehicleRepository {
     return {
       vehicles: rowsRes.rows.map((r) => this.mapVehicle(r)),
       total,
+    };
+  }
+
+  async getFacets(): Promise<VehicleFacets> {
+    const makeRes = await this.pool.query("SELECT DISTINCT make FROM vehicles WHERE status != 'delisted' ORDER BY make ASC");
+    const modelRes = await this.pool.query("SELECT DISTINCT model FROM vehicles WHERE status != 'delisted' ORDER BY model ASC");
+    const bodyRes = await this.pool.query("SELECT DISTINCT body_type FROM vehicles WHERE status != 'delisted' AND body_type IS NOT NULL ORDER BY body_type ASC");
+    const condRes = await this.pool.query("SELECT DISTINCT condition FROM vehicles WHERE status != 'delisted' AND condition IS NOT NULL ORDER BY condition ASC");
+    const transRes = await this.pool.query("SELECT DISTINCT transmission FROM vehicles WHERE status != 'delisted' AND transmission IS NOT NULL ORDER BY transmission ASC");
+    const fuelRes = await this.pool.query("SELECT DISTINCT fuel_type FROM vehicles WHERE status != 'delisted' AND fuel_type IS NOT NULL ORDER BY fuel_type ASC");
+    const boundsRes = await this.pool.query(`
+      SELECT 
+        MIN(price_ngn) as min_price, 
+        MAX(price_ngn) as max_price, 
+        MIN(year) as min_year, 
+        MAX(year) as max_year,
+        MIN(mileage) as min_mileage,
+        MAX(mileage) as max_mileage
+      FROM vehicles 
+      WHERE status != 'delisted'
+    `);
+    const b = boundsRes.rows[0];
+
+    return {
+      makes: makeRes.rows.map((r) => r.make).filter(Boolean),
+      models: modelRes.rows.map((r) => r.model).filter(Boolean),
+      bodyTypes: bodyRes.rows.map((r) => r.body_type).filter(Boolean),
+      conditions: condRes.rows.map((r) => r.condition).filter(Boolean),
+      transmissions: transRes.rows.map((r) => r.transmission).filter(Boolean),
+      fuelTypes: fuelRes.rows.map((r) => r.fuel_type).filter(Boolean),
+      priceBounds: {
+        min: b?.min_price ? Number(b.min_price) : 5000000,
+        max: b?.max_price ? Number(b.max_price) : 150000000,
+      },
+      yearBounds: {
+        min: b?.min_year ? Number(b.min_year) : 2012,
+        max: b?.max_year ? Number(b.max_year) : 2026,
+      },
+      mileageBounds: {
+        min: b?.min_mileage !== undefined ? Number(b.min_mileage) : 0,
+        max: b?.max_mileage ? Number(b.max_mileage) : 150000,
+      },
     };
   }
 

@@ -45,13 +45,101 @@ export class SqliteUserRepository implements IUserRepository {
   constructor(private db: DatabaseSync) {}
 
   async findById(id: string): Promise<User | null> {
-    const row = this.db.prepare('SELECT * FROM users WHERE id = ?').get(id) as any;
+    const row = this.db.prepare('SELECT * FROM users WHERE id = ? OR clerk_id = ?').get(id, id) as any;
     return row ? this.mapUser(row) : null;
   }
 
   async findByEmail(email: string): Promise<User | null> {
     const row = this.db.prepare('SELECT * FROM users WHERE LOWER(email) = LOWER(?)').get(email) as any;
     return row ? this.mapUser(row) : null;
+  }
+
+  async findByClerkId(clerkId: string): Promise<User | null> {
+    const row = this.db.prepare('SELECT * FROM users WHERE clerk_id = ? OR id = ?').get(clerkId, clerkId) as any;
+    return row ? this.mapUser(row) : null;
+  }
+
+  async upsertClerkUser(data: {
+    clerkId: string;
+    email: string;
+    fullName: string;
+    phone?: string;
+    avatarUrl?: string;
+    role?: 'customer' | 'staff' | 'admin';
+  }): Promise<User> {
+    const existing = await this.findByClerkId(data.clerkId) || await this.findByEmail(data.email);
+    const now = new Date().toISOString();
+
+    if (existing) {
+      const updated: User = {
+        ...existing,
+        clerkId: data.clerkId,
+        email: data.email || existing.email,
+        fullName: data.fullName || existing.fullName,
+        phone: data.phone !== undefined ? data.phone : existing.phone,
+        avatarUrl: data.avatarUrl !== undefined ? data.avatarUrl : existing.avatarUrl,
+        role: data.role || existing.role,
+        updatedAt: now,
+      };
+
+      this.db
+        .prepare(
+          `UPDATE users SET clerk_id = ?, email = ?, full_name = ?, phone = ?, avatar_url = ?, role = ?, updated_at = ? WHERE id = ?`
+        )
+        .run(
+          updated.clerkId || null,
+          updated.email,
+          updated.fullName,
+          updated.phone,
+          updated.avatarUrl || null,
+          updated.role,
+          updated.updatedAt,
+          existing.id
+        );
+
+      return updated;
+    }
+
+    // Create new profile linked to Clerk
+    const id = data.clerkId.startsWith('user_') ? data.clerkId : `usr_${crypto.randomUUID()}`;
+    const newUser: User = {
+      id,
+      clerkId: data.clerkId,
+      email: data.email,
+      fullName: data.fullName || 'Valued Client',
+      phone: data.phone || '',
+      role: data.role || 'customer',
+      status: 'active',
+      avatarUrl: data.avatarUrl,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    this.db
+      .prepare(
+        `INSERT INTO users (id, clerk_id, email, password_hash, full_name, phone, role, status, avatar_url, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        newUser.id,
+        newUser.clerkId || null,
+        newUser.email,
+        newUser.passwordHash || '',
+        newUser.fullName,
+        newUser.phone,
+        newUser.role,
+        newUser.status,
+        newUser.avatarUrl || null,
+        newUser.createdAt,
+        newUser.updatedAt
+      );
+
+    return newUser;
+  }
+
+  async deleteByClerkId(clerkId: string): Promise<boolean> {
+    const res = this.db.prepare('DELETE FROM users WHERE clerk_id = ? OR id = ?').run(clerkId, clerkId);
+    return res.changes > 0;
   }
 
   async create(user: Omit<User, 'id' | 'createdAt' | 'updatedAt'>): Promise<User> {
@@ -116,6 +204,7 @@ export class SqliteUserRepository implements IUserRepository {
   private mapUser(row: any): User {
     return {
       id: row.id,
+      clerkId: row.clerk_id || undefined,
       email: row.email,
       passwordHash: row.password_hash,
       fullName: row.full_name,
@@ -156,25 +245,25 @@ export class SqliteVehicleRepository implements IVehicleRepository {
       conditions.push('LOWER(model) LIKE LOWER(?)');
       params.push(`%${filters.model}%`);
     }
-    if (filters.condition && filters.condition !== 'All') {
-      conditions.push('condition = ?');
+    if (filters.condition && filters.condition !== 'All' && filters.condition !== 'All Conditions') {
+      conditions.push('LOWER(condition) = LOWER(?)');
       params.push(filters.condition);
     }
-    if (filters.bodyType && filters.bodyType !== 'All') {
-      conditions.push('body_type = ?');
+    if (filters.bodyType && filters.bodyType !== 'All' && filters.bodyType !== 'All Body Types') {
+      conditions.push('LOWER(body_type) = LOWER(?)');
       params.push(filters.bodyType);
     }
-    if (filters.transmission) {
-      conditions.push('transmission = ?');
+    if (filters.transmission && filters.transmission !== 'All Transmissions' && filters.transmission !== 'All') {
+      conditions.push('LOWER(transmission) = LOWER(?)');
       params.push(filters.transmission);
     }
-    if (filters.fuelType) {
-      conditions.push('fuel_type = ?');
+    if (filters.fuelType && filters.fuelType !== 'All Fuels' && filters.fuelType !== 'All') {
+      conditions.push('LOWER(fuel_type) = LOWER(?)');
       params.push(filters.fuelType);
     }
     if (filters.city) {
-      conditions.push('LOWER(city) = LOWER(?)');
-      params.push(filters.city);
+      conditions.push('(LOWER(city) = LOWER(?) OR LOWER(location) LIKE LOWER(?))');
+      params.push(filters.city, `%${filters.city}%`);
     }
     if (filters.verified !== undefined) {
       conditions.push('verified = ?');
@@ -202,10 +291,18 @@ export class SqliteVehicleRepository implements IVehicleRepository {
       conditions.push('year <= ?');
       params.push(filters.maxYear);
     }
+    if (filters.minMileage !== undefined) {
+      conditions.push('mileage >= ?');
+      params.push(filters.minMileage);
+    }
+    if (filters.maxMileage !== undefined) {
+      conditions.push('mileage <= ?');
+      params.push(filters.maxMileage);
+    }
     if (filters.search) {
-      conditions.push('(LOWER(make) LIKE LOWER(?) OR LOWER(model) LIKE LOWER(?) OR LOWER(description) LIKE LOWER(?))');
+      conditions.push('(LOWER(make) LIKE LOWER(?) OR LOWER(model) LIKE LOWER(?) OR LOWER(description) LIKE LOWER(?) OR LOWER(location) LIKE LOWER(?))');
       const s = `%${filters.search}%`;
-      params.push(s, s, s);
+      params.push(s, s, s, s);
     }
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -213,14 +310,72 @@ export class SqliteVehicleRepository implements IVehicleRepository {
     const countRow = this.db.prepare(`SELECT COUNT(*) as cnt FROM vehicles ${whereClause}`).get(...params) as any;
     const total = countRow ? Number(countRow.cnt) : 0;
 
+    let orderBy = 'created_at DESC, id DESC';
+    if (filters.sort === 'price-asc') {
+      orderBy = 'price_ngn ASC, id DESC';
+    } else if (filters.sort === 'price-desc') {
+      orderBy = 'price_ngn DESC, id DESC';
+    } else if (filters.sort === 'mileage-asc') {
+      orderBy = 'mileage ASC, id DESC';
+    } else if (filters.sort === 'mileage-desc') {
+      orderBy = 'mileage DESC, id DESC';
+    } else if (filters.sort === 'year-desc') {
+      orderBy = 'year DESC, price_ngn ASC, id DESC';
+    } else if (filters.sort === 'year-asc') {
+      orderBy = 'year ASC, price_ngn ASC, id DESC';
+    } else if (filters.sort === 'newest') {
+      orderBy = 'created_at DESC, id DESC';
+    }
+
     const limit = filters.limit || 50;
     const offset = filters.offset || 0;
     const rows = this.db
-      .prepare(`SELECT * FROM vehicles ${whereClause} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+      .prepare(`SELECT * FROM vehicles ${whereClause} ORDER BY ${orderBy} LIMIT ? OFFSET ?`)
       .all(...params, limit, offset) as any[];
 
     const vehicles = rows.map((r) => this.mapVehicle(r));
     return { vehicles, total };
+  }
+
+  async getFacets(): Promise<VehicleFacets> {
+    const makeRows = this.db.prepare("SELECT DISTINCT make FROM vehicles WHERE status != 'delisted' ORDER BY make ASC").all() as any[];
+    const modelRows = this.db.prepare("SELECT DISTINCT model FROM vehicles WHERE status != 'delisted' ORDER BY model ASC").all() as any[];
+    const bodyRows = this.db.prepare("SELECT DISTINCT body_type FROM vehicles WHERE status != 'delisted' AND body_type IS NOT NULL ORDER BY body_type ASC").all() as any[];
+    const conditionRows = this.db.prepare("SELECT DISTINCT condition FROM vehicles WHERE status != 'delisted' AND condition IS NOT NULL ORDER BY condition ASC").all() as any[];
+    const transRows = this.db.prepare("SELECT DISTINCT transmission FROM vehicles WHERE status != 'delisted' AND transmission IS NOT NULL ORDER BY transmission ASC").all() as any[];
+    const fuelRows = this.db.prepare("SELECT DISTINCT fuel_type FROM vehicles WHERE status != 'delisted' AND fuel_type IS NOT NULL ORDER BY fuel_type ASC").all() as any[];
+    const boundsRow = this.db.prepare(`
+      SELECT 
+        MIN(price_ngn) as min_price, 
+        MAX(price_ngn) as max_price, 
+        MIN(year) as min_year, 
+        MAX(year) as max_year,
+        MIN(mileage) as min_mileage,
+        MAX(mileage) as max_mileage
+      FROM vehicles 
+      WHERE status != 'delisted'
+    `).get() as any;
+
+    return {
+      makes: makeRows.map((r) => r.make).filter(Boolean),
+      models: modelRows.map((r) => r.model).filter(Boolean),
+      bodyTypes: bodyRows.map((r) => r.body_type).filter(Boolean),
+      conditions: conditionRows.map((r) => r.condition).filter(Boolean),
+      transmissions: transRows.map((r) => r.transmission).filter(Boolean),
+      fuelTypes: fuelRows.map((r) => r.fuel_type).filter(Boolean),
+      priceBounds: {
+        min: boundsRow?.min_price ? Number(boundsRow.min_price) : 5000000,
+        max: boundsRow?.max_price ? Number(boundsRow.max_price) : 150000000,
+      },
+      yearBounds: {
+        min: boundsRow?.min_year ? Number(boundsRow.min_year) : 2012,
+        max: boundsRow?.max_year ? Number(boundsRow.max_year) : 2026,
+      },
+      mileageBounds: {
+        min: boundsRow?.min_mileage !== undefined ? Number(boundsRow.min_mileage) : 0,
+        max: boundsRow?.max_mileage ? Number(boundsRow.max_mileage) : 150000,
+      },
+    };
   }
 
   async create(vehicle: Omit<Vehicle, 'id' | 'createdAt' | 'updatedAt'>, images: string[] = []): Promise<Vehicle> {

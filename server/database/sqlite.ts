@@ -479,4 +479,17 @@ export function initializeDatabaseSchema(db: DatabaseSync): void {
       new Date().toISOString()
     );
   }
+
+  if (!applied.has('002_clerk_auth_support')) {
+    try {
+      db.exec(`ALTER TABLE users ADD COLUMN clerk_id TEXT;`);
+    } catch {}
+    try {
+      db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_clerk_id ON users(clerk_id);`);
+    } catch {}
+    db.prepare('INSERT INTO _migrations (name, applied_at) VALUES (?, ?)').run(
+      '002_clerk_auth_support',
+      new Date().toISOString()
+    );
+  }
 }

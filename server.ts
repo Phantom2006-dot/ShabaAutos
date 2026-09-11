@@ -1,14 +1,52 @@
 import express, { Request, Response } from 'express';
 import path from 'path';
+import helmet from 'helmet';
+import cors from 'cors';
 import { createServer as createViteServer } from 'vite';
 import { getDatabaseService, getDatabaseType } from './server/database/index';
 import { seedDatabase, hashPassword } from './server/scripts/seed';
 import crypto from 'node:crypto';
+import { requireAuth, requireRole, getAuthenticatedClerkUser } from './server/middleware/auth';
+import { handleClerkWebhook } from './server/routes/webhooks';
+import { normalizeNigerianPhone } from './server/utils/phone';
 
 const app = express();
 const PORT = 3000;
 
-app.use(express.json());
+// Security Headers (CSP relaxed for Vite local development and preview iframe)
+app.use(
+  helmet({
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false,
+  })
+);
+
+const allowedOrigins = (process.env.CORS_ALLOWED_ORIGINS || 'http://localhost:3000')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin) || process.env.NODE_ENV !== 'production') {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
+    credentials: true,
+  })
+);
+
+// Capture raw body buffer for Svix webhook signature verification
+app.use(
+  express.json({
+    verify: (req: any, _res, buf) => {
+      req.rawBody = buf.toString();
+    },
+  })
+);
 app.use(express.urlencoded({ extended: true }));
 
 // Initialize persistent database service
@@ -19,7 +57,7 @@ seedDatabase(false).catch((err) => {
   console.error('[DB Seed Check Error]:', err);
 });
 
-// Helper for password verification
+// Helper for password verification (legacy/compatibility)
 function verifyPassword(password: string, combinedHash: string): boolean {
   try {
     const [salt, key] = combinedHash.split(':');
@@ -42,6 +80,8 @@ app.get('/api/health', async (_req: Request, res: Response) => {
       timestamp: new Date().toISOString(),
       database: getDatabaseType(),
       totalVehicles: total,
+      authProvider: 'clerk',
+      demoMode: process.env.DEMO_MODE === 'true' || !process.env.CLERK_SECRET_KEY,
     });
   } catch (err: any) {
     res.status(500).json({ status: 'error', message: err.message });
@@ -49,67 +89,26 @@ app.get('/api/health', async (_req: Request, res: Response) => {
 });
 
 // -------------------------------------------------------------
-// 2. Authentication & User Profile Routes
+// 2. Clerk Webhook Handler (Svix Signature Verified)
 // -------------------------------------------------------------
-app.post('/api/auth/register', async (req: Request, res: Response) => {
+app.post('/api/webhooks/clerk', handleClerkWebhook);
+
+// -------------------------------------------------------------
+// 2b. Authentication & User Profile Routes (Clerk Integrated)
+// -------------------------------------------------------------
+app.get('/api/auth/me', requireAuth, async (req: Request, res: Response) => {
   try {
-    const { email, password, fullName, phone, role } = req.body;
-    if (!email || !password || !fullName || !phone) {
-      return res.status(400).json({ success: false, message: 'All registration fields are required' });
-    }
-
-    const existing = await dbService.users.findByEmail(email);
-    if (existing) {
-      return res.status(409).json({ success: false, message: 'An account with this email already exists' });
-    }
-
-    const passwordHash = hashPassword(password);
-    const user = await dbService.users.create({
-      email,
-      passwordHash,
-      fullName,
-      phone,
-      role: role === 'admin' ? 'admin' : role === 'staff' ? 'staff' : 'customer',
-      status: 'active',
-    });
-
-    res.status(201).json({
-      success: true,
-      message: 'Account registered successfully',
-      user: {
-        id: user.id,
-        email: user.email,
-        fullName: user.fullName,
-        phone: user.phone,
-        role: user.role,
-      },
-    });
-  } catch (err: any) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-app.post('/api/auth/login', async (req: Request, res: Response) => {
-  try {
-    const { email, password } = req.body;
-    if (!email || !password) {
-      return res.status(400).json({ success: false, message: 'Email and password are required' });
-    }
-
-    const user = await dbService.users.findByEmail(email);
-    if (!user || !verifyPassword(password, user.passwordHash)) {
-      return res.status(401).json({ success: false, message: 'Invalid email or password' });
-    }
-
+    const user = req.user!;
     res.json({
       success: true,
-      message: 'Logged in successfully',
       user: {
         id: user.id,
+        clerkId: user.clerkId,
         email: user.email,
         fullName: user.fullName,
         phone: user.phone,
         role: user.role,
+        avatarUrl: user.avatarUrl,
       },
     });
   } catch (err: any) {
@@ -117,29 +116,451 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
   }
 });
 
-app.get('/api/user/saved-cars', async (req: Request, res: Response) => {
+app.post('/api/auth/sync', requireAuth, async (req: Request, res: Response) => {
   try {
-    const userId = (req.query.userId as string) || 'usr_guest';
-    const saved = await dbService.saved.getSavedVehicles(userId);
-    res.json({ success: true, savedCarIds: saved });
+    const { fullName, phone } = req.body;
+    const updates: any = {};
+
+    if (fullName && typeof fullName === 'string') {
+      updates.fullName = fullName.trim();
+    }
+
+    if (phone) {
+      const phoneRes = normalizeNigerianPhone(phone);
+      if (!phoneRes.valid) {
+        return res.status(400).json({
+          success: false,
+          message: phoneRes.error || 'Invalid Nigerian phone number',
+          code: 'INVALID_PHONE',
+          fieldErrors: { phone: phoneRes.error },
+        });
+      }
+      updates.phone = phoneRes.normalized;
+    }
+
+    const updated = await dbService.users.update(req.user!.id, updates);
+    res.json({
+      success: true,
+      message: 'Profile synchronized successfully',
+      user: updated,
+    });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-app.post('/api/user/saved-cars', async (req: Request, res: Response) => {
+app.post('/api/auth/register', async (_req: Request, res: Response) => {
+  res.status(200).json({
+    success: true,
+    message: 'ShabaAutos uses Clerk identity authentication. Please use Clerk custom authentication in AuthModalScreen.',
+    provider: 'clerk',
+  });
+});
+
+app.post('/api/auth/login', async (_req: Request, res: Response) => {
+  res.status(200).json({
+    success: true,
+    message: 'ShabaAutos uses Clerk identity authentication. Please use Clerk custom authentication in AuthModalScreen.',
+    provider: 'clerk',
+  });
+});
+
+// Helper: Map database vehicle entity into UI-ready Car model with stable images, explicit licensing & sanitization
+async function formatVehicleToCar(v: any, images?: string[], seller?: any): Promise<any> {
+  const defaultImages = [
+    'https://images.unsplash.com/photo-1621007947382-bb3c3994e3fb?auto=format&fit=crop&w=1200&q=80',
+    'https://images.unsplash.com/photo-1590362891991-f776e747a588?auto=format&fit=crop&w=1200&q=80',
+    'https://images.unsplash.com/photo-1552519507-da3b142c6e3d?auto=format&fit=crop&w=1200&q=80',
+    'https://images.unsplash.com/photo-1549399542-7e3f8b79c341?auto=format&fit=crop&w=1200&q=80',
+  ];
+
+  let resolvedImages = images;
+  if (!resolvedImages || resolvedImages.length === 0) {
+    const dbImages = await dbService.vehicles.getImages(v.id);
+    resolvedImages = dbImages.length > 0 ? dbImages.map((img) => img.url) : defaultImages;
+  }
+
+  let resolvedSeller = seller;
+  if (!resolvedSeller && v.sellerId) {
+    resolvedSeller = await dbService.vehicles.getSeller(v.sellerId);
+  }
+
+  const createdDate = new Date(v.createdAt || Date.now());
+  const diffHours = Math.max(0, Math.floor((Date.now() - createdDate.getTime()) / (1000 * 60 * 60)));
+  const listedTimeAgo =
+    diffHours < 1 ? 'Just listed' : diffHours < 24 ? `${diffHours} hours ago` : `${Math.floor(diffHours / 24)} days ago`;
+
+  return {
+    id: v.id,
+    make: v.make,
+    model: v.model,
+    year: Number(v.year),
+    trim: v.trim || undefined,
+    priceNgn: Number(v.priceNgn),
+    priceUsd: v.priceUsd ? Number(v.priceUsd) : Math.round(Number(v.priceNgn) / 1500),
+    mileage: Number(v.mileage),
+    mileageUnit: v.mileageUnit || 'km',
+    transmission: v.transmission === 'Manual' ? 'Manual' : 'Automatic',
+    fuelType: v.fuelType || 'Petrol',
+    location: v.location || 'Lagos',
+    city: v.city || 'Lagos',
+    state: v.state || 'Lagos',
+    verified: Boolean(v.verified),
+    cleanTitle: v.cleanTitle !== undefined ? Boolean(v.cleanTitle) : true,
+    condition: v.condition || 'Nigeria Used',
+    bodyType: v.bodyType || 'SUV',
+    engine: v.engine || '2.5L 4-Cylinder',
+    driveType: v.driveType || 'AWD',
+    color: v.color || 'Silver',
+    seats: Number(v.seats) || 5,
+    stockId: v.stockId,
+    listedTimeAgo,
+    images: resolvedImages,
+    imageSource: 'Verified Dealership Catalog & Studio Media',
+    imageLicense: 'Editorial & Commercial Vehicle Marketplace Display Rights Granted',
+    description: v.description || '',
+    features: Array.isArray(v.features) ? v.features : [],
+    inspectionPassed: v.inspectionPassed !== undefined ? Boolean(v.inspectionPassed) : true,
+    // Strictly omit internal supplier notes, private seller banking/phone, or admin moderation fields
+    seller: resolvedSeller
+      ? {
+          name: resolvedSeller.name,
+          verified: Boolean(resolvedSeller.verified),
+          rating: Number(resolvedSeller.rating) || 4.9,
+          reviewsCount: Number(resolvedSeller.reviewsCount) || 42,
+          location: resolvedSeller.location || 'Lagos, Nigeria',
+          joinedYear: resolvedSeller.joinedYear || '2021',
+        }
+      : {
+          name: 'Prime Motors Ltd',
+          verified: true,
+          rating: 4.9,
+          reviewsCount: 42,
+          location: 'Lekki Phase 1, Lagos',
+          joinedYear: '2021',
+        },
+  };
+}
+
+// -------------------------------------------------------------
+// 2c. Customer-Owned Private Resources (Scoped to Authenticated User)
+// -------------------------------------------------------------
+app.get('/api/me/saved-vehicles', requireAuth, async (req: Request, res: Response) => {
   try {
-    const { userId = 'usr_guest', carId, action } = req.body;
-    if (!carId) {
+    const saved = await dbService.saved.getSavedVehicles(req.user!.id);
+    const vehicles = await Promise.all(
+      saved.map(async (vId) => {
+        const v = await dbService.vehicles.findById(vId);
+        return v ? formatVehicleToCar(v) : null;
+      })
+    );
+    res.json({
+      success: true,
+      savedCarIds: saved,
+      vehicles: vehicles.filter(Boolean),
+      count: saved.length,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.post('/api/me/saved-vehicles/:vehicleId', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { vehicleId } = req.params;
+    if (!vehicleId) {
+      return res.status(400).json({ success: false, message: 'vehicleId parameter is required' });
+    }
+    await dbService.saved.saveVehicle(req.user!.id, vehicleId);
+    const saved = await dbService.saved.getSavedVehicles(req.user!.id);
+    res.json({
+      success: true,
+      message: 'Vehicle saved to wishlist',
+      savedCarIds: saved,
+      count: saved.length,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.delete('/api/me/saved-vehicles/:vehicleId', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { vehicleId } = req.params;
+    if (!vehicleId) {
+      return res.status(400).json({ success: false, message: 'vehicleId parameter is required' });
+    }
+    await dbService.saved.unsaveVehicle(req.user!.id, vehicleId);
+    const saved = await dbService.saved.getSavedVehicles(req.user!.id);
+    res.json({
+      success: true,
+      message: 'Vehicle removed from wishlist',
+      savedCarIds: saved,
+      count: saved.length,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Backward compatibility for body-based saved-vehicles
+app.post('/api/me/saved-vehicles', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { carId, vehicleId, action } = req.body;
+    const targetId = vehicleId || carId;
+    if (!targetId) {
+      return res.status(400).json({ success: false, message: 'vehicleId or carId is required' });
+    }
+    if (action === 'remove') {
+      await dbService.saved.unsaveVehicle(req.user!.id, targetId);
+    } else {
+      await dbService.saved.saveVehicle(req.user!.id, targetId);
+    }
+    const saved = await dbService.saved.getSavedVehicles(req.user!.id);
+    res.json({ success: true, savedCarIds: saved, count: saved.length });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Backward compatibility for /api/user/saved-cars
+app.get('/api/user/saved-cars', async (req: Request, res: Response) => {
+  try {
+    const user = await getAuthenticatedClerkUser(req);
+    if (!user) {
+      return res.json({ success: true, savedCarIds: [] });
+    }
+    const saved = await dbService.saved.getSavedVehicles(user.id);
+    res.json({ success: true, savedCarIds: saved, count: saved.length });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.post('/api/user/saved-cars', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { carId, vehicleId, action } = req.body;
+    const targetId = vehicleId || carId;
+    if (!targetId) {
       return res.status(400).json({ success: false, message: 'carId is required' });
     }
     if (action === 'remove') {
-      await dbService.saved.unsaveVehicle(userId, carId);
+      await dbService.saved.unsaveVehicle(req.user!.id, targetId);
     } else {
-      await dbService.saved.saveVehicle(userId, carId);
+      await dbService.saved.saveVehicle(req.user!.id, targetId);
     }
-    const saved = await dbService.saved.getSavedVehicles(userId);
-    res.json({ success: true, savedCarIds: saved });
+    const saved = await dbService.saved.getSavedVehicles(req.user!.id);
+    res.json({ success: true, savedCarIds: saved, count: saved.length });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// -------------------------------------------------------------
+// Saved Searches Endpoints
+// -------------------------------------------------------------
+app.get('/api/me/saved-searches', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const searches = await dbService.saved.getSavedSearches(req.user!.id);
+    res.json({ success: true, data: searches });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.post('/api/me/saved-searches', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { name, criteria, notifyEmail, notifySms } = req.body;
+    if (!name || typeof name !== 'string') {
+      return res.status(400).json({ success: false, message: 'A descriptive search name is required' });
+    }
+    if (!criteria || typeof criteria !== 'object') {
+      return res.status(400).json({ success: false, message: 'Search criteria object is required' });
+    }
+    const created = await dbService.saved.createSavedSearch({
+      userId: req.user!.id,
+      name: name.trim(),
+      criteria,
+      notifyEmail: Boolean(notifyEmail),
+      notifySms: Boolean(notifySms),
+    });
+    res.status(201).json({
+      success: true,
+      message: 'Search criteria saved successfully',
+      data: created,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.delete('/api/me/saved-searches/:id', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    if (!id) {
+      return res.status(400).json({ success: false, message: 'Saved search ID is required' });
+    }
+    const deleted = await dbService.saved.deleteSavedSearch(id, req.user!.id);
+    if (!deleted) {
+      return res.status(404).json({ success: false, message: 'Saved search not found or unauthorized' });
+    }
+    res.json({ success: true, message: 'Saved search deleted successfully' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.delete('/api/me/saved-searches', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.body;
+    if (!id) {
+      return res.status(400).json({ success: false, message: 'Saved search id is required' });
+    }
+    const deleted = await dbService.saved.deleteSavedSearch(id, req.user!.id);
+    if (!deleted) {
+      return res.status(404).json({ success: false, message: 'Saved search not found or unauthorized' });
+    }
+    res.json({ success: true, message: 'Saved search deleted successfully' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// -------------------------------------------------------------
+// Comparison Endpoints
+// -------------------------------------------------------------
+app.get('/api/me/comparison', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const list = await dbService.saved.getComparisonList(req.user!.id);
+    const vehicles = await Promise.all(
+      (list || []).map(async (vId) => {
+        const v = await dbService.vehicles.findById(vId);
+        return v ? formatVehicleToCar(v) : null;
+      })
+    );
+    res.json({
+      success: true,
+      vehicleIds: list || [],
+      vehicles: vehicles.filter(Boolean),
+      count: (list || []).length,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+const saveComparisonHandler = async (req: Request, res: Response) => {
+  try {
+    const { vehicleIds } = req.body;
+    if (!Array.isArray(vehicleIds)) {
+      return res.status(400).json({ success: false, message: 'vehicleIds array is required' });
+    }
+    const sanitizedIds = vehicleIds.filter((id) => typeof id === 'string').slice(0, 5);
+    const saved = await dbService.saved.saveComparisonList(req.user!.id, 'Default Comparison', sanitizedIds);
+    const vehicles = await Promise.all(
+      saved.vehicleIds.map(async (vId) => {
+        const v = await dbService.vehicles.findById(vId);
+        return v ? formatVehicleToCar(v) : null;
+      })
+    );
+    res.json({
+      success: true,
+      message: 'Comparison list updated successfully',
+      vehicleIds: saved.vehicleIds,
+      vehicles: vehicles.filter(Boolean),
+      count: saved.vehicleIds.length,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+app.put('/api/me/comparison', requireAuth, saveComparisonHandler);
+app.post('/api/me/comparison', requireAuth, saveComparisonHandler);
+
+app.get('/api/me/offers', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const offers = await dbService.offers.listByUserId(req.user!.id);
+    res.json({ success: true, data: offers });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.get('/api/me/inspections', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const inspections = await dbService.inspections.listByUserId(req.user!.id);
+    res.json({ success: true, data: inspections });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.get('/api/me/rentals', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const rentals = await dbService.rentals.listBookingsByUserId(req.user!.id);
+    res.json({ success: true, data: rentals });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.get('/api/me/imports', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const imports = await dbService.imports.listRequests(req.user!.id);
+    res.json({ success: true, data: imports });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.get('/api/me/notifications', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const notifications = await dbService.notifications.listByUserId(req.user!.id);
+    res.json({ success: true, data: notifications });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// -------------------------------------------------------------
+// 2d. Staff & Admin Protected Routes
+// -------------------------------------------------------------
+app.get('/api/admin/users', requireRole('admin'), async (_req: Request, res: Response) => {
+  try {
+    const users = await dbService.users.list(100, 0);
+    res.json({ success: true, data: users });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.patch('/api/admin/users/:id/role', requireRole('admin'), async (req: Request, res: Response) => {
+  try {
+    const { role } = req.body;
+    if (!['customer', 'staff', 'admin'].includes(role)) {
+      return res.status(400).json({ success: false, message: 'Invalid role. Must be customer, staff, or admin.' });
+    }
+    const updated = await dbService.users.update(req.params.id, { role });
+    res.json({ success: true, data: updated });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.get('/api/staff/offers', requireRole(['staff', 'admin']), async (_req: Request, res: Response) => {
+  try {
+    const offers = await dbService.offers.listAll(100, 0);
+    res.json({ success: true, data: offers });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.get('/api/staff/inspections', requireRole(['staff', 'admin']), async (_req: Request, res: Response) => {
+  try {
+    const inspections = await dbService.inspections.listAll(100, 0);
+    res.json({ success: true, data: inspections });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -148,9 +569,22 @@ app.post('/api/user/saved-cars', async (req: Request, res: Response) => {
 // -------------------------------------------------------------
 // 3. Vehicles Showroom & Inventory Endpoints
 // -------------------------------------------------------------
+app.get('/api/vehicles/facets', async (_req: Request, res: Response) => {
+  try {
+    const facets = await dbService.vehicles.getFacets();
+    res.json({
+      success: true,
+      data: facets,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 app.get('/api/vehicles', async (req: Request, res: Response) => {
   try {
     const {
+      search,
       make,
       model,
       condition,
@@ -161,76 +595,62 @@ app.get('/api/vehicles', async (req: Request, res: Response) => {
       maxPrice,
       minYear,
       maxYear,
+      minMileage,
+      maxMileage,
       city,
       verified,
-      search,
       page = '1',
-      limit = '50',
+      pageSize = '12',
+      limit,
+      sort = 'newest',
     } = req.query;
 
     const pageNum = Math.max(1, parseInt(page as string, 10) || 1);
-    const limitNum = Math.min(100, Math.max(1, parseInt(limit as string, 10) || 50));
-    const offset = (pageNum - 1) * limitNum;
+    const sizeParam = pageSize || limit;
+    const pageSizeNum = Math.min(100, Math.max(1, parseInt(sizeParam as string, 10) || 12));
+    const offset = (pageNum - 1) * pageSizeNum;
 
     const result = await dbService.vehicles.list({
-      make: make as string,
-      model: model as string,
-      condition: condition as string,
-      bodyType: bodyType as string,
-      transmission: transmission as string,
-      fuelType: fuelType as string,
-      minPrice: minPrice ? parseInt(minPrice as string, 10) : undefined,
-      maxPrice: maxPrice ? parseInt(maxPrice as string, 10) : undefined,
-      minYear: minYear && minYear !== 'Min Year' ? parseInt(minYear as string, 10) : undefined,
-      maxYear: maxYear && maxYear !== 'Max Year' ? parseInt(maxYear as string, 10) : undefined,
-      city: city as string,
+      make: make && make !== 'All Makes' && make !== 'All' ? String(make) : undefined,
+      model: model && model !== 'All Models' && model !== 'All' ? String(model) : undefined,
+      condition: condition && condition !== 'All Conditions' && condition !== 'All' ? String(condition) : undefined,
+      bodyType: bodyType && bodyType !== 'All Body Types' && bodyType !== 'All' ? String(bodyType) : undefined,
+      transmission: transmission && transmission !== 'All Transmissions' && transmission !== 'All' ? String(transmission) : undefined,
+      fuelType: fuelType && fuelType !== 'All Fuels' && fuelType !== 'All' ? String(fuelType) : undefined,
+      minPrice: minPrice ? parseInt(String(minPrice), 10) : undefined,
+      maxPrice: maxPrice ? parseInt(String(maxPrice), 10) : undefined,
+      minYear: minYear && minYear !== 'Min Year' ? parseInt(String(minYear), 10) : undefined,
+      maxYear: maxYear && maxYear !== 'Max Year' ? parseInt(String(maxYear), 10) : undefined,
+      minMileage: minMileage ? parseInt(String(minMileage), 10) : undefined,
+      maxMileage: maxMileage ? parseInt(String(maxMileage), 10) : undefined,
+      city: city && city !== 'All Locations' && city !== 'All Cities' && city !== 'Select Location' ? String(city) : undefined,
       verified: verified === 'true' ? true : verified === 'false' ? false : undefined,
-      search: search as string,
-      limit: limitNum,
+      search: search ? String(search).trim() : undefined,
+      sort: sort ? String(sort) : 'newest',
+      limit: pageSizeNum,
       offset,
     });
 
-    // Hydrate images and seller for each vehicle
     const enrichedVehicles = await Promise.all(
-      result.vehicles.map(async (v) => {
-        const images = await dbService.vehicles.getImages(v.id);
-        const seller = v.sellerId ? await dbService.vehicles.getSeller(v.sellerId) : null;
-        return {
-          ...v,
-          images: images.length > 0 ? images.map((img) => img.url) : [
-            'https://images.unsplash.com/photo-1621007947382-bb3c3994e3fb?auto=format&fit=crop&w=1000&q=80'
-          ],
-          seller: seller
-            ? {
-                name: seller.name,
-                dealership: seller.dealershipName,
-                verified: seller.verified,
-                rating: seller.rating,
-                reviews: seller.reviewsCount,
-                location: seller.location,
-                phone: seller.phone,
-                email: seller.email,
-                joined: seller.joinedYear,
-              }
-            : {
-                name: 'Prime Motors Ltd',
-                verified: true,
-                rating: 4.9,
-                reviews: 42,
-                location: 'Lekki Phase 1, Lagos',
-                phone: '+234 803 000 0000',
-                joined: '2021',
-              },
-        };
-      })
+      result.vehicles.map((v) => formatVehicleToCar(v))
     );
+
+    const totalPages = Math.max(1, Math.ceil(result.total / pageSizeNum));
 
     res.json({
       success: true,
+      data: enrichedVehicles,
+      pagination: {
+        page: pageNum,
+        pageSize: pageSizeNum,
+        total: result.total,
+        totalPages,
+        hasNextPage: pageNum < totalPages,
+        hasPrevPage: pageNum > 1,
+      },
       total: result.total,
       page: pageNum,
-      limit: limitNum,
-      data: enrichedVehicles,
+      limit: pageSizeNum,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err.message });
@@ -245,27 +665,42 @@ app.get('/api/vehicles/:id', async (req: Request, res: Response) => {
       vehicle = await dbService.vehicles.findByStockId(id);
     }
     if (!vehicle) {
-      return res.status(404).json({ success: false, message: 'Vehicle not found' });
+      return res.status(404).json({ success: false, message: `Vehicle '${id}' not found` });
     }
 
-    const images = await dbService.vehicles.getImages(vehicle.id);
-    const seller = vehicle.sellerId ? await dbService.vehicles.getSeller(vehicle.sellerId) : null;
+    const formatted = await formatVehicleToCar(vehicle);
 
     res.json({
       success: true,
-      data: {
-        ...vehicle,
-        images: images.length > 0 ? images.map((img) => img.url) : [],
-        seller: seller || {
-          name: 'Prime Motors Ltd',
-          verified: true,
-          rating: 4.9,
-          reviews: 42,
-          location: 'Lekki Phase 1, Lagos',
-          phone: '+234 803 000 0000',
-          joined: '2021',
-        },
-      },
+      data: formatted,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.post('/api/vehicles/:id/share-token', async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id;
+    let vehicle = await dbService.vehicles.findById(id);
+    if (!vehicle) {
+      vehicle = await dbService.vehicles.findByStockId(id);
+    }
+    if (!vehicle) {
+      return res.status(404).json({ success: false, message: `Vehicle with ID or stock ID '${id}' not found` });
+    }
+
+    const shareToken = `sh_${crypto.randomBytes(12).toString('hex')}`;
+    const host = req.get('host') || 'localhost:3000';
+    const protocol = req.protocol || 'http';
+    const shareUrl = `${protocol}://${host}/?carId=${encodeURIComponent(vehicle.id)}&shareToken=${shareToken}`;
+
+    res.json({
+      success: true,
+      vehicleId: vehicle.id,
+      shareToken,
+      shareUrl,
+      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
     });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err.message });
@@ -275,21 +710,32 @@ app.get('/api/vehicles/:id', async (req: Request, res: Response) => {
 // -------------------------------------------------------------
 // 4. Offers Submission & Processing
 // -------------------------------------------------------------
-app.post('/api/offers', async (req: Request, res: Response) => {
+app.post('/api/offers', requireAuth, async (req: Request, res: Response) => {
   try {
     const { carId, carName, name, buyerName, phone, buyerPhone, email, buyerEmail, offerAmountNgn, paymentMethod, notes, purchaseNotes } = req.body;
-    const finalName = (name || buyerName || '').trim();
-    const finalPhone = (phone || buyerPhone || '').trim();
-    const finalEmail = (email || buyerEmail || '').trim();
+    const finalName = (name || buyerName || req.user?.fullName || '').trim();
+    const rawPhone = (phone || buyerPhone || req.user?.phone || '').trim();
+    const finalEmail = (email || buyerEmail || req.user?.email || '').trim();
     const finalNotes = (notes || purchaseNotes || '').trim();
     const amount = Number(offerAmountNgn);
 
-    if (!carId || !finalName || !finalPhone || !amount || isNaN(amount)) {
+    if (!carId || !finalName || !rawPhone || !amount || isNaN(amount)) {
       return res.status(400).json({
         success: false,
         message: 'Missing required offer information (carId, name, phone, offerAmountNgn)',
       });
     }
+
+    const phoneRes = normalizeNigerianPhone(rawPhone);
+    if (!phoneRes.valid) {
+      return res.status(400).json({
+        success: false,
+        message: phoneRes.error || 'Invalid Nigerian phone number',
+        code: 'INVALID_PHONE',
+        fieldErrors: { phone: phoneRes.error },
+      });
+    }
+    const finalPhone = phoneRes.normalized;
 
     if (amount <= 0) {
       return res.status(400).json({ success: false, message: 'Offer amount must be greater than zero' });
@@ -302,6 +748,7 @@ app.post('/api/offers', async (req: Request, res: Response) => {
     const offer = await dbService.offers.create({
       carId,
       carName: carName || (vehicle ? `${vehicle.year} ${vehicle.make} ${vehicle.model}` : 'Vehicle'),
+      userId: req.user!.id,
       name: finalName,
       phone: finalPhone,
       email: finalEmail || undefined,
@@ -314,11 +761,11 @@ app.post('/api/offers', async (req: Request, res: Response) => {
 
     // Record audit log
     await dbService.audit.record({
-      actorRole: 'customer',
+      actorRole: req.user!.role,
       action: 'SUBMIT_PRICE_OFFER',
       resourceType: 'offer',
       resourceId: offer.id,
-      changesJson: JSON.stringify({ amountNgn: amount, carId }),
+      changesJson: JSON.stringify({ amountNgn: amount, carId, userId: req.user!.id }),
     });
 
     res.status(201).json({
@@ -334,31 +781,43 @@ app.post('/api/offers', async (req: Request, res: Response) => {
 // -------------------------------------------------------------
 // 5. Vehicle Inspection Bookings
 // -------------------------------------------------------------
-app.post('/api/inspections', async (req: Request, res: Response) => {
+app.post('/api/inspections', requireAuth, async (req: Request, res: Response) => {
   try {
     const { carId, carName, name, customerName, buyerName, phone, customerPhone, buyerPhone, email, customerEmail, buyerEmail, date, inspDate, timeSlot, inspTime, hubLocation, inspHub, inspectionType, inspType } = req.body;
-    const finalName = (name || customerName || buyerName || '').trim();
-    const finalPhone = (phone || customerPhone || buyerPhone || '').trim();
+    const finalName = (name || customerName || buyerName || req.user?.fullName || '').trim();
+    const rawPhone = (phone || customerPhone || buyerPhone || req.user?.phone || '').trim();
     const finalDate = (date || inspDate || '').trim();
     const finalTime = (timeSlot || inspTime || '10:00 AM - 12:00 PM').trim();
     const finalHub = (hubLocation || inspHub || 'Lekki Phase 1 Hub, Lagos').trim();
     const finalType = (inspectionType || inspType || 'Physical Inspection').trim() as any;
 
-    if (!carId || !finalName || !finalPhone || !finalDate) {
+    if (!carId || !finalName || !rawPhone || !finalDate) {
       return res.status(400).json({
         success: false,
         message: 'Missing required inspection booking details (carId, name, phone, date)',
       });
     }
 
+    const phoneRes = normalizeNigerianPhone(rawPhone);
+    if (!phoneRes.valid) {
+      return res.status(400).json({
+        success: false,
+        message: phoneRes.error || 'Invalid Nigerian phone number',
+        code: 'INVALID_PHONE',
+        fieldErrors: { phone: phoneRes.error },
+      });
+    }
+    const finalPhone = phoneRes.normalized;
+
     const vehicle = await dbService.vehicles.findById(carId);
 
     const inspection = await dbService.inspections.create({
       carId,
       carName: carName || (vehicle ? `${vehicle.year} ${vehicle.make} ${vehicle.model}` : 'Vehicle'),
+      userId: req.user!.id,
       name: finalName,
       phone: finalPhone,
-      email: (email || customerEmail || buyerEmail || '').trim() || undefined,
+      email: (email || customerEmail || buyerEmail || req.user?.email || '').trim() || undefined,
       date: finalDate,
       timeSlot: finalTime,
       hubLocation: finalHub,
@@ -389,7 +848,7 @@ app.get('/api/rentals/vehicles', async (req: Request, res: Response) => {
   }
 });
 
-app.post('/api/rentals/book', async (req: Request, res: Response) => {
+app.post('/api/rentals/book', requireAuth, async (req: Request, res: Response) => {
   try {
     const {
       carId,
@@ -410,19 +869,30 @@ app.post('/api/rentals/book', async (req: Request, res: Response) => {
       withInsurance,
     } = req.body;
 
-    const finalName = (customerName || renterName || name || '').trim();
-    const finalPhone = (phone || renterPhone || '').trim();
-    const finalEmail = (email || renterEmail || '').trim();
+    const finalName = (customerName || renterName || name || req.user?.fullName || '').trim();
+    const rawPhone = (phone || renterPhone || req.user?.phone || '').trim();
+    const finalEmail = (email || renterEmail || req.user?.email || '').trim();
     const finalPickup = (pickupDate || '').trim();
     const finalReturn = (returnDate || dropoffDate || '').trim();
     const numDays = Math.max(1, parseInt(days as string, 10) || 1);
 
-    if (!finalName || !finalPhone || !finalPickup || !carId) {
+    if (!finalName || !rawPhone || !finalPickup || !carId) {
       return res.status(400).json({
         success: false,
         message: 'Missing required rental reservation details (carId, name, phone, pickupDate)',
       });
     }
+
+    const phoneRes = normalizeNigerianPhone(rawPhone);
+    if (!phoneRes.valid) {
+      return res.status(400).json({
+        success: false,
+        message: phoneRes.error || 'Invalid Nigerian phone number',
+        code: 'INVALID_PHONE',
+        fieldErrors: { phone: phoneRes.error },
+      });
+    }
+    const finalPhone = phoneRes.normalized;
 
     // Look up vehicle to enforce genuine daily rate (do NOT trust client rate)
     const rentalVehicle = await dbService.rentals.findVehicleById(carId);
@@ -438,6 +908,7 @@ app.post('/api/rentals/book', async (req: Request, res: Response) => {
     const booking = await dbService.rentals.createBookingWithBlock({
       carId,
       carName: carName || rentalVehicle.name,
+      userId: req.user!.id,
       customerName: finalName,
       phone: finalPhone,
       email: finalEmail || undefined,
@@ -535,7 +1006,7 @@ app.post('/api/imports/calculate', (req: Request, res: Response) => {
 // -------------------------------------------------------------
 // 8. Custom Import Request Submission
 // -------------------------------------------------------------
-app.post('/api/imports/request', async (req: Request, res: Response) => {
+app.post('/api/imports/request', requireAuth, async (req: Request, res: Response) => {
   try {
     const {
       make,
@@ -560,25 +1031,37 @@ app.post('/api/imports/request', async (req: Request, res: Response) => {
       additionalNotes,
     } = req.body;
 
-    const finalName = (customerName || fullName || '').trim();
-    const finalPhone = (phone || '').trim();
+    const finalName = (customerName || fullName || req.user?.fullName || '').trim();
+    const rawPhone = (phone || req.user?.phone || '').trim();
     const finalMake = (make || '').trim();
     const finalModel = (model || '').trim();
 
-    if (!finalName || !finalPhone || !finalMake || !finalModel) {
+    if (!finalName || !rawPhone || !finalMake || !finalModel) {
       return res.status(400).json({
         success: false,
         message: 'Missing required import request fields (customerName, phone, make, model)',
       });
     }
 
+    const phoneRes = normalizeNigerianPhone(rawPhone);
+    if (!phoneRes.valid) {
+      return res.status(400).json({
+        success: false,
+        message: phoneRes.error || 'Invalid Nigerian phone number',
+        code: 'INVALID_PHONE',
+        fieldErrors: { phone: phoneRes.error },
+      });
+    }
+    const finalPhone = phoneRes.normalized;
+
     const trackingId = `SHA-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
 
     const order = await dbService.imports.createRequest({
       trackingId,
+      userId: req.user!.id,
       customerName: finalName,
       phone: finalPhone,
-      email: (email || '').trim() || undefined,
+      email: (email || req.user?.email || '').trim() || undefined,
       make: finalMake,
       model: finalModel,
       year: year ? parseInt(year as string, 10) : undefined,
@@ -688,20 +1171,31 @@ app.get('/api/tracking/:trackingId', async (req: Request, res: Response) => {
 // -------------------------------------------------------------
 // 10. Sell Car Valuation & Consignment Submission
 // -------------------------------------------------------------
-app.post('/api/sell', async (req: Request, res: Response) => {
+app.post('/api/sell', requireAuth, async (req: Request, res: Response) => {
   try {
     const { make, model, year, trim, mileage, condition, askingPriceNgn, sellerName, fullName, phone, email, location, issues } = req.body;
-    const finalSeller = (sellerName || fullName || '').trim();
-    const finalPhone = (phone || '').trim();
+    const finalSeller = (sellerName || fullName || req.user?.fullName || '').trim();
+    const rawPhone = (phone || req.user?.phone || '').trim();
     const finalMake = (make || '').trim();
     const finalModel = (model || '').trim();
 
-    if (!finalMake || !finalModel || !finalSeller || !finalPhone) {
+    if (!finalMake || !finalModel || !finalSeller || !rawPhone) {
       return res.status(400).json({
         success: false,
         message: 'Missing required vehicle information (make, model, sellerName, phone)',
       });
     }
+
+    const phoneRes = normalizeNigerianPhone(rawPhone);
+    if (!phoneRes.valid) {
+      return res.status(400).json({
+        success: false,
+        message: phoneRes.error || 'Invalid Nigerian phone number',
+        code: 'INVALID_PHONE',
+        fieldErrors: { phone: phoneRes.error },
+      });
+    }
+    const finalPhone = phoneRes.normalized;
 
     const asking = Number(askingPriceNgn) || 15000000;
     const carYear = parseInt(year as string, 10) || 2020;
@@ -731,7 +1225,7 @@ app.post('/api/sell', async (req: Request, res: Response) => {
     const submission = await dbService.sell.create({
       sellerName: finalSeller,
       phone: finalPhone,
-      email: (email || '').trim() || undefined,
+      email: (email || req.user?.email || '').trim() || undefined,
       make: finalMake,
       model: finalModel,
       year: carYear,
@@ -775,7 +1269,7 @@ app.post('/api/sell', async (req: Request, res: Response) => {
 // -------------------------------------------------------------
 // 11. Car Concierge ("Find Me a Car") Request
 // -------------------------------------------------------------
-app.post('/api/concierge', async (req: Request, res: Response) => {
+app.post('/api/concierge', requireAuth, async (req: Request, res: Response) => {
   try {
     const {
       fullName,
@@ -798,24 +1292,35 @@ app.post('/api/concierge', async (req: Request, res: Response) => {
       notes,
     } = req.body;
 
-    const finalName = (fullName || '').trim();
-    const finalPhone = (phone || '').trim();
+    const finalName = (fullName || req.user?.fullName || '').trim();
+    const rawPhone = (phone || req.user?.phone || '').trim();
     const finalMake = (desiredMake || make || '').trim();
     const finalModel = (desiredModel || model || 'Any Model').trim();
 
-    if (!finalName || !finalPhone || !finalMake) {
+    if (!finalName || !rawPhone || !finalMake) {
       return res.status(400).json({
         success: false,
         message: 'Missing required concierge fields (fullName, phone, desiredMake/make)',
       });
     }
 
+    const phoneRes = normalizeNigerianPhone(rawPhone);
+    if (!phoneRes.valid) {
+      return res.status(400).json({
+        success: false,
+        message: phoneRes.error || 'Invalid Nigerian phone number',
+        code: 'INVALID_PHONE',
+        fieldErrors: { phone: phoneRes.error },
+      });
+    }
+    const finalPhone = phoneRes.normalized;
+
     const maxBudget = Number(maxBudgetNgn) || (budgetRange ? parseInt(String(budgetRange).replace(/[^0-9]/g, ''), 10) : 35000000) || 35000000;
 
     const request = await dbService.concierge.create({
       fullName: finalName,
       phone: finalPhone,
-      email: (email || '').trim() || undefined,
+      email: (email || req.user?.email || '').trim() || undefined,
       desiredMake: finalMake,
       desiredModel: finalModel,
       bodyType: bodyType || undefined,

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { ScreenId } from './types';
 import { Header } from './components/Header';
 import { Footer } from './components/Footer';
@@ -14,12 +14,14 @@ import { SavedCompareScreen } from './views/SavedCompareScreen';
 import { OrderTrackingScreen } from './views/OrderTrackingScreen';
 import { AuthModalScreen } from './views/AuthModalScreen';
 import { MobileBottomNav } from './components/MobileBottomNav';
+import { MobileSidebar } from './components/MobileSidebar';
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<ScreenId>('home');
   const [selectedCarId, setSelectedCarId] = useState<string>('car-1');
   const [previousScreen, setPreviousScreen] = useState<ScreenId>('home');
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
   const [savedCarIds, setSavedCarIds] = useState<string[]>([
     'rav4-2022',
     'camry-2022',
@@ -136,6 +138,7 @@ export default function App() {
           <AuthModalScreen
             onNavigate={handleNavigate}
             onClose={() => setCurrentScreen(previousScreen)}
+            previousScreen={previousScreen}
           />
         )}
       </main>
@@ -149,7 +152,20 @@ export default function App() {
         onNavigate={handleNavigate}
         savedCount={savedCarIds.length}
         compareCount={3}
+        isMenuOpen={mobileMenuOpen}
         onOpenMenu={() => setMobileMenuOpen(true)}
+        menuButtonRef={menuButtonRef}
+      />
+
+      {/* Responsive Slide-Out Mobile Navigation Drawer */}
+      <MobileSidebar
+        isOpen={mobileMenuOpen}
+        onClose={() => setMobileMenuOpen(false)}
+        onNavigate={handleNavigate}
+        currentScreen={currentScreen}
+        savedCount={savedCarIds.length}
+        compareCount={3}
+        triggerRef={menuButtonRef}
       />
     </div>
   );

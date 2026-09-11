@@ -123,3 +123,15 @@ export type ScreenId =
   | 'saved-compare'
   | 'order-tracking'
   | 'auth';
+
+export type AppUserRole = 'customer' | 'staff' | 'admin';
+
+export interface AppUser {
+  id: string;
+  clerkId?: string;
+  email: string;
+  fullName: string;
+  phone?: string;
+  role: AppUserRole;
+  avatarUrl?: string;
+}

@@ -22,9 +22,11 @@ import {
   MessageSquare,
   Home,
   Calendar,
+  LogOut,
 } from 'lucide-react';
 import { ScreenId } from '../types';
 import { ShabaAutosLogo } from './ShabaAutosLogo';
+import { useAuthUser } from '../context/AuthContext';
 
 interface HeaderProps {
   currentScreen: ScreenId;
@@ -42,11 +44,14 @@ export const Header: React.FC<HeaderProps> = ({
   onNavigate,
   savedCount,
   compareCount,
-  isLoggedIn = false,
+  isLoggedIn: propIsLoggedIn,
   mobileMenuOpen: externalMenuOpen,
   onToggleMobileMenu,
   onCloseMobileMenu,
 }) => {
+  const { user, isSignedIn, signOut, isDemoMode, switchDemoRole } = useAuthUser();
+  const isLoggedIn = isSignedIn || Boolean(user) || propIsLoggedIn;
+
   const [internalMenuOpen, setInternalMenuOpen] = useState(false);
   const isMenuOpen = externalMenuOpen !== undefined ? externalMenuOpen : internalMenuOpen;
 
@@ -62,9 +67,6 @@ export const Header: React.FC<HeaderProps> = ({
   };
 
   const [activeDropdown, setActiveDropdown] = useState<string | null>(null);
-  const [mobileExpanded, setMobileExpanded] = useState<string | null>('buy');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedCurrency, setSelectedCurrency] = useState<'NGN' | 'USD'>('NGN');
   const closeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const navContainerRef = useRef<HTMLDivElement>(null);
 
@@ -78,7 +80,11 @@ export const Header: React.FC<HeaderProps> = ({
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setActiveDropdown(null);
-        setIsMenuOpen(false);
+        if (onCloseMobileMenu) {
+          onCloseMobileMenu();
+        } else {
+          setIsMenuOpen(false);
+        }
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -89,7 +95,7 @@ export const Header: React.FC<HeaderProps> = ({
       document.removeEventListener('touchstart', handleClickOutside);
       document.removeEventListener('keydown', handleKeyDown);
     };
-  }, []);
+  }, [onCloseMobileMenu]);
 
   const handleMouseEnter = (name: string) => {
     if (closeTimeoutRef.current) {
@@ -119,16 +125,11 @@ export const Header: React.FC<HeaderProps> = ({
   const handleNavClick = (screenId: ScreenId) => {
     onNavigate(screenId);
     setActiveDropdown(null);
-    setIsMenuOpen(false);
-  };
-
-  const toggleMobileSubmenu = (menuName: string) => {
-    setMobileExpanded(mobileExpanded === menuName ? null : menuName);
-  };
-
-  const handleDrawerSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    handleNavClick('buy-cars');
+    if (onCloseMobileMenu) {
+      onCloseMobileMenu();
+    } else {
+      setIsMenuOpen(false);
+    }
   };
 
   return (
@@ -581,40 +582,75 @@ export const Header: React.FC<HeaderProps> = ({
             onMouseEnter={() => handleMouseEnter('account')}
             onMouseLeave={handleMouseLeave}
           >
-            {isLoggedIn ? (
+            {isLoggedIn && user ? (
               <button
                 onClick={(e) => handleToggleDropdown('account', e)}
                 className="flex items-center gap-1.5 pl-1.5 pr-2 py-1 rounded-full border border-emerald-300 hover:border-[#12492f] bg-white transition-all shadow-2xs cursor-pointer"
-                title="Your Account"
+                title={`Logged in as ${user.fullName} (${user.role})`}
                 aria-expanded={activeDropdown === 'account'}
               >
-                <div className="w-5 h-5 rounded-full bg-[#12492f] text-white flex items-center justify-center text-[9px] font-bold">
-                  OA
-                </div>
-                <span className="text-[11px] font-semibold text-[#12492f] hidden sm:inline">Oluwasegun</span>
+                {user.avatarUrl ? (
+                  <img
+                    src={user.avatarUrl}
+                    alt={user.fullName}
+                    className="w-5 h-5 rounded-full object-cover border border-emerald-400"
+                  />
+                ) : (
+                  <div className="w-5 h-5 rounded-full bg-[#12492f] text-white flex items-center justify-center text-[9px] font-bold uppercase">
+                    {user.fullName.split(' ').map((n) => n[0]).join('').slice(0, 2) || 'SA'}
+                  </div>
+                )}
+                <span className="text-[11px] font-semibold text-[#12492f] hidden sm:inline max-w-[90px] truncate">
+                  {user.fullName.split(' ')[0]}
+                </span>
+                <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded-full uppercase ${
+                  user.role === 'admin'
+                    ? 'bg-purple-100 text-purple-800'
+                    : user.role === 'staff'
+                    ? 'bg-blue-100 text-blue-800'
+                    : 'bg-emerald-100 text-[#12492f]'
+                }`}>
+                  {user.role}
+                </span>
                 <ChevronDown size={11} className="text-[#12492f]" />
               </button>
             ) : (
               <button
                 className="shabaautos-signin flex items-center justify-center gap-1 cursor-pointer"
-                onClick={(e) => handleToggleDropdown('account', e)}
+                onClick={() => handleNavClick('auth')}
                 aria-expanded={activeDropdown === 'account'}
               >
                 <span>Sign In</span>
-                <ChevronDown size={11} />
+                <User size={12} className="ml-0.5" />
               </button>
             )}
 
             {/* Account Dropdown Panel */}
-            {activeDropdown === 'account' && (
-              <div className="shabaautos-dropdown-panel right-0 left-auto w-[240px]">
+            {activeDropdown === 'account' && isLoggedIn && user && (
+              <div className="shabaautos-dropdown-panel right-0 left-auto w-[260px]">
                 <div className="px-3 py-2 border-b border-[#e4e9e3] mb-1">
-                  <div className="text-xs font-bold text-[#12492f]">
-                    {isLoggedIn ? 'Oluwasegun Adeleke' : 'Welcome to ShabaAutos'}
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-[#12492f] truncate">
+                      {user.fullName}
+                    </span>
+                    <span className={`text-[9px] font-extrabold px-1.5 py-0.2 rounded-full uppercase ${
+                      user.role === 'admin'
+                        ? 'bg-purple-100 text-purple-800'
+                        : user.role === 'staff'
+                        ? 'bg-blue-100 text-blue-800'
+                        : 'bg-emerald-100 text-[#12492f]'
+                    }`}>
+                      {user.role}
+                    </span>
                   </div>
-                  <div className="text-[10px] text-gray-500">
-                    {isLoggedIn ? 'Customer ID: SA-CUST-441' : 'Manage cars, orders & wishlist'}
+                  <div className="text-[10px] text-gray-500 truncate mt-0.5">
+                    {user.email}
                   </div>
+                  {user.phone && (
+                    <div className="text-[10px] text-gray-400 font-mono mt-0.2">
+                      {user.phone}
+                    </div>
+                  )}
                 </div>
 
                 <div className="space-y-0.5">
@@ -652,13 +688,48 @@ export const Header: React.FC<HeaderProps> = ({
                     </span>
                   </button>
 
+                  {/* Demo Role Switcher in dropdown */}
+                  {isDemoMode && (
+                    <div className="border-t border-[#e4e9e3] pt-1.5 mt-1.5 px-2">
+                      <div className="text-[9px] font-bold text-gray-400 uppercase tracking-wider mb-1">
+                        Switch Demo Persona
+                      </div>
+                      <div className="grid grid-cols-3 gap-1">
+                        {(['customer', 'staff', 'admin'] as const).map((r) => (
+                          <button
+                            key={r}
+                            type="button"
+                            onClick={() => switchDemoRole(r)}
+                            className={`px-1.5 py-1 text-[10px] font-bold rounded capitalize cursor-pointer transition-all ${
+                              user.role === r
+                                ? 'bg-[#12492f] text-white'
+                                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                            }`}
+                          >
+                            {r}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
                   <div className="border-t border-[#e4e9e3] pt-1 mt-1">
                     <button
                       onClick={() => handleNavClick('auth')}
                       className="shabaautos-dropdown-item font-bold text-[#12492f]"
                     >
                       <User size={14} />
-                      <span>{isLoggedIn ? 'Account Profile' : 'Sign In / Register'}</span>
+                      <span>Account Details & Security</span>
+                    </button>
+                    <button
+                      onClick={async () => {
+                        await signOut();
+                        setActiveDropdown(null);
+                      }}
+                      className="shabaautos-dropdown-item font-bold text-red-600 hover:bg-red-50 hover:text-red-700"
+                    >
+                      <LogOut size={14} />
+                      <span>Sign Out</span>
                     </button>
                   </div>
                 </div>
@@ -719,53 +790,16 @@ export const Header: React.FC<HeaderProps> = ({
           <button
             className="flex items-center gap-1.5 px-3.5 py-2 text-white bg-[#12492f] hover:bg-[#0e3b26] rounded-lg transition-all shadow-2xs cursor-pointer active:scale-95 min-h-[44px]"
             aria-label={isMenuOpen ? 'Close navigation directory' : 'Open navigation directory'}
-            onClick={() => setIsMenuOpen(!isMenuOpen)}
+            onClick={() => {
+              if (onToggleMobileMenu) {
+                onToggleMobileMenu();
+              } else {
+                setIsMenuOpen(!isMenuOpen);
+              }
+            }}
           >
             {isMenuOpen ? <X size={16} /> : <Menu size={16} />}
             <span className="text-[11px] font-bold uppercase tracking-wider">Directory</span>
-          </button>
-        </div>
-
-        {/* Mobile Navigation Controls (< 768px) */}
-        <div className="flex md:hidden items-center gap-1.5 ml-auto">
-          <a
-            href="https://wa.me/2348123456789"
-            target="_blank"
-            rel="noreferrer"
-            className="w-11 h-11 text-emerald-800 bg-emerald-50 hover:bg-emerald-100 rounded-xl transition-colors cursor-pointer flex items-center justify-center shrink-0"
-            aria-label="Chat on WhatsApp"
-          >
-            <MessageSquare size={18} />
-          </a>
-
-          <a
-            href="tel:+2348123456789"
-            className="w-11 h-11 text-[#12492f] bg-emerald-50 hover:bg-emerald-100 rounded-xl transition-colors cursor-pointer flex items-center justify-center shrink-0"
-            aria-label="Call ShabaAutos Hotline"
-          >
-            <Phone size={18} />
-          </a>
-
-          <button
-            onClick={() => handleNavClick('saved-compare')}
-            className="w-11 h-11 text-[#12492f] rounded-xl hover:bg-emerald-50 transition-colors relative cursor-pointer flex items-center justify-center shrink-0"
-            aria-label="Saved Cars"
-          >
-            <Heart size={19} className={savedCount > 0 ? 'fill-[#12492f]/20' : ''} />
-            {savedCount > 0 && (
-              <span className="absolute top-1.5 right-1.5 w-4 h-4 bg-emerald-700 text-white rounded-full text-[10px] font-bold flex items-center justify-center">
-                {savedCount}
-              </span>
-            )}
-          </button>
-
-          {/* Mobile Hamburger Button */}
-          <button
-            className="w-11 h-11 text-[#12492f] bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-xl transition-all active:scale-95 cursor-pointer flex items-center justify-center shadow-xs shrink-0"
-            aria-label={isMenuOpen ? 'Close Navigation Menu' : 'Open Navigation Menu'}
-            onClick={() => setIsMenuOpen(!isMenuOpen)}
-          >
-            {isMenuOpen ? <X size={21} /> : <Menu size={21} />}
           </button>
         </div>
       </div>
@@ -1022,442 +1056,6 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
       </nav>
 
-      {/* Comprehensive Slide-Out Navigation Drawer for Mobile & Tablet */}
-      {isMenuOpen && (
-        <div className="fixed inset-0 z-50 flex justify-end">
-          {/* Backdrop Blur */}
-          <div
-            className="fixed inset-0 bg-black/60 backdrop-blur-xs transition-opacity duration-300"
-            onClick={() => setIsMenuOpen(false)}
-            aria-hidden="true"
-          />
-
-          {/* Slide-out Drawer Panel */}
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label="Navigation Directory"
-            className="relative z-10 w-full max-w-[380px] bg-white h-full shadow-2xl flex flex-col overflow-hidden animate-in slide-in-from-right duration-250"
-          >
-            {/* Drawer Top Header */}
-            <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-[#fbfcfa]">
-              <div
-                className="cursor-pointer select-none"
-                onClick={() => handleNavClick('home')}
-              >
-                <ShabaAutosLogo size="sm" showDivider={true} />
-              </div>
-
-              <button
-                type="button"
-                onClick={() => setIsMenuOpen(false)}
-                className="w-9 h-9 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-700 flex items-center justify-center cursor-pointer transition-colors"
-                aria-label="Close menu"
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            {/* Quick Search & Currency Bar */}
-            <div className="p-4 bg-gray-50/80 border-b border-gray-100 space-y-2.5">
-              <form onSubmit={handleDrawerSearch} className="relative">
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search cars, makes, models, VIN..."
-                  className="w-full pl-9 pr-4 py-2.5 text-xs bg-white rounded-xl border border-gray-200 focus:outline-none focus:border-[#12492f] transition-all font-medium text-gray-800 placeholder-gray-400 shadow-2xs"
-                />
-                <Search size={15} className="absolute left-3 top-3 text-gray-400" />
-              </form>
-
-              {/* Currency & Quick Actions Row */}
-              <div className="flex items-center justify-between text-xs">
-                <div className="flex items-center gap-1 bg-white p-1 rounded-lg border border-gray-200">
-                  <button
-                    type="button"
-                    onClick={() => setSelectedCurrency('NGN')}
-                    className={`px-2.5 py-1 rounded text-[11px] font-bold transition-colors cursor-pointer ${
-                      selectedCurrency === 'NGN'
-                        ? 'bg-[#12492f] text-white'
-                        : 'text-gray-600 hover:text-gray-900'
-                    }`}
-                  >
-                    ₦ NGN
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedCurrency('USD')}
-                    className={`px-2.5 py-1 rounded text-[11px] font-bold transition-colors cursor-pointer ${
-                      selectedCurrency === 'USD'
-                        ? 'bg-[#12492f] text-white'
-                        : 'text-gray-600 hover:text-gray-900'
-                    }`}
-                  >
-                    $ USD
-                  </button>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => handleNavClick('saved-compare')}
-                    className="flex items-center gap-1 text-[11px] font-bold text-gray-700 bg-white px-2.5 py-1 rounded-lg border border-gray-200 hover:border-[#12492f] cursor-pointer"
-                  >
-                    <Heart size={12} className="text-emerald-700" />
-                    <span>Saved ({savedCount})</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleNavClick('saved-compare')}
-                    className="flex items-center gap-1 text-[11px] font-bold text-gray-700 bg-white px-2.5 py-1 rounded-lg border border-gray-200 hover:border-[#12492f] cursor-pointer"
-                  >
-                    <Scale size={12} className="text-emerald-700" />
-                    <span>Compare ({compareCount})</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Scrollable Navigation Body */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              {/* Quick Navigation 4-Card Grid */}
-              <div>
-                <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-2">
-                  Primary Services
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => handleNavClick('buy-cars')}
-                    className="p-3 bg-emerald-50/50 hover:bg-emerald-50 rounded-xl border border-emerald-100 text-left transition-all cursor-pointer group"
-                  >
-                    <div className="w-8 h-8 rounded-lg bg-emerald-100 text-[#12492f] flex items-center justify-center mb-1.5 group-hover:scale-105 transition-transform">
-                      <Car size={16} />
-                    </div>
-                    <div className="text-xs font-bold text-gray-900">Buy a Car</div>
-                    <div className="text-[10px] text-gray-500">56+ verified cars</div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => handleNavClick('rent-car')}
-                    className="p-3 bg-emerald-50/50 hover:bg-emerald-50 rounded-xl border border-emerald-100 text-left transition-all cursor-pointer group"
-                  >
-                    <div className="w-8 h-8 rounded-lg bg-emerald-100 text-[#12492f] flex items-center justify-center mb-1.5 group-hover:scale-105 transition-transform">
-                      <Plane size={16} />
-                    </div>
-                    <div className="text-xs font-bold text-gray-900">Rent a Car</div>
-                    <div className="text-[10px] text-gray-500">Lagos & Abuja fleet</div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => handleNavClick('import-landing')}
-                    className="p-3 bg-emerald-50/50 hover:bg-emerald-50 rounded-xl border border-emerald-100 text-left transition-all cursor-pointer group"
-                  >
-                    <div className="w-8 h-8 rounded-lg bg-emerald-100 text-[#12492f] flex items-center justify-center mb-1.5 group-hover:scale-105 transition-transform">
-                      <Ship size={16} />
-                    </div>
-                    <div className="text-xs font-bold text-gray-900">Import US</div>
-                    <div className="text-[10px] text-gray-500">Copart & Manheim</div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => handleNavClick('sell-car')}
-                    className="p-3 bg-emerald-50/50 hover:bg-emerald-50 rounded-xl border border-emerald-100 text-left transition-all cursor-pointer group"
-                  >
-                    <div className="w-8 h-8 rounded-lg bg-emerald-100 text-[#12492f] flex items-center justify-center mb-1.5 group-hover:scale-105 transition-transform">
-                      <DollarSign size={16} />
-                    </div>
-                    <div className="text-xs font-bold text-gray-900">Sell Car</div>
-                    <div className="text-[10px] text-gray-500">Instant cash offer</div>
-                  </button>
-                </div>
-              </div>
-
-              {/* Detailed Navigation List with Accordions */}
-              <div className="space-y-1 pt-2 border-t border-gray-100">
-                {/* Home */}
-                <button
-                  type="button"
-                  onClick={() => handleNavClick('home')}
-                  className={`w-full text-left px-3.5 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center justify-between cursor-pointer ${
-                    currentScreen === 'home'
-                      ? 'bg-emerald-100/80 text-[#12492f]'
-                      : 'text-gray-800 hover:bg-gray-50'
-                  }`}
-                >
-                  <span className="flex items-center gap-2.5">
-                    <Sparkles size={15} className="text-emerald-700" />
-                    Home Overview
-                  </span>
-                  <ChevronRight size={14} className="text-gray-400" />
-                </button>
-
-                {/* Buy Cars Accordion */}
-                <div>
-                  <button
-                    type="button"
-                    onClick={() => toggleMobileSubmenu('buy')}
-                    className="w-full text-left px-3.5 py-2.5 rounded-xl text-xs font-bold text-gray-800 hover:bg-gray-50 flex items-center justify-between cursor-pointer"
-                  >
-                    <span className="flex items-center gap-2.5">
-                      <Car size={15} className="text-emerald-700" />
-                      Buy Verified Vehicles
-                    </span>
-                    <ChevronDown
-                      size={15}
-                      className={`transition-transform duration-200 text-gray-500 ${
-                        mobileExpanded === 'buy' ? 'rotate-180' : ''
-                      }`}
-                    />
-                  </button>
-                  {mobileExpanded === 'buy' && (
-                    <div className="ml-5 pl-3 border-l-2 border-emerald-200 space-y-1 py-1">
-                      <button
-                        type="button"
-                        onClick={() => handleNavClick('buy-cars')}
-                        className="w-full text-left py-1.5 text-xs font-semibold text-gray-600 hover:text-[#12492f] block cursor-pointer"
-                      >
-                        • All Inventory (56+ Cars)
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleNavClick('car-details-rav4')}
-                        className="w-full text-left py-1.5 text-xs font-semibold text-gray-600 hover:text-[#12492f] block cursor-pointer"
-                      >
-                        • SUVs & Crossovers (Toyota, Lexus, Benz)
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleNavClick('car-details')}
-                        className="w-full text-left py-1.5 text-xs font-semibold text-gray-600 hover:text-[#12492f] block cursor-pointer"
-                      >
-                        • Sedans & Luxury Saloons
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                {/* Rent a Car Accordion */}
-                <div>
-                  <button
-                    type="button"
-                    onClick={() => toggleMobileSubmenu('rent')}
-                    className="w-full text-left px-3.5 py-2.5 rounded-xl text-xs font-bold text-gray-800 hover:bg-gray-50 flex items-center justify-between cursor-pointer"
-                  >
-                    <span className="flex items-center gap-2.5">
-                      <Plane size={15} className="text-emerald-700" />
-                      Rent a Car
-                    </span>
-                    <ChevronDown
-                      size={15}
-                      className={`transition-transform duration-200 text-gray-500 ${
-                        mobileExpanded === 'rent' ? 'rotate-180' : ''
-                      }`}
-                    />
-                  </button>
-                  {mobileExpanded === 'rent' && (
-                    <div className="ml-5 pl-3 border-l-2 border-emerald-200 space-y-1 py-1">
-                      <button
-                        type="button"
-                        onClick={() => handleNavClick('rent-car')}
-                        className="w-full text-left py-1.5 text-xs font-semibold text-gray-600 hover:text-[#12492f] block cursor-pointer"
-                      >
-                        • Daily & Weekly Self-Drive
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleNavClick('rent-car')}
-                        className="w-full text-left py-1.5 text-xs font-semibold text-gray-600 hover:text-[#12492f] block cursor-pointer"
-                      >
-                        • Airport Transfers (Lagos & Abuja)
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleNavClick('rent-car')}
-                        className="w-full text-left py-1.5 text-xs font-semibold text-gray-600 hover:text-[#12492f] block cursor-pointer"
-                      >
-                        • Chauffeur & VIP Armed Escort
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                {/* Import from US Accordion */}
-                <div>
-                  <button
-                    type="button"
-                    onClick={() => toggleMobileSubmenu('import')}
-                    className="w-full text-left px-3.5 py-2.5 rounded-xl text-xs font-bold text-gray-800 hover:bg-gray-50 flex items-center justify-between cursor-pointer"
-                  >
-                    <span className="flex items-center gap-2.5">
-                      <Ship size={15} className="text-emerald-700" />
-                      Import from USA
-                    </span>
-                    <ChevronDown
-                      size={15}
-                      className={`transition-transform duration-200 text-gray-500 ${
-                        mobileExpanded === 'import' ? 'rotate-180' : ''
-                      }`}
-                    />
-                  </button>
-                  {mobileExpanded === 'import' && (
-                    <div className="ml-5 pl-3 border-l-2 border-emerald-200 space-y-1 py-1">
-                      <button
-                        type="button"
-                        onClick={() => handleNavClick('import-landing')}
-                        className="w-full text-left py-1.5 text-xs font-semibold text-gray-600 hover:text-[#12492f] block cursor-pointer"
-                      >
-                        • Import Overview & Process
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleNavClick('import-landing')}
-                        className="w-full text-left py-1.5 text-xs font-semibold text-gray-600 hover:text-[#12492f] block cursor-pointer"
-                      >
-                        • Customs Duty & Clearing Calculator
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleNavClick('import-form')}
-                        className="w-full text-left py-1.5 text-xs font-semibold text-gray-600 hover:text-[#12492f] block cursor-pointer"
-                      >
-                        • Start 4-Step Import Wizard
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleNavClick('order-tracking')}
-                        className="w-full text-left py-1.5 text-xs font-semibold text-emerald-800 font-bold block cursor-pointer"
-                      >
-                        • Track Order (SA-IMP-00078)
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                {/* Sell Your Car */}
-                <button
-                  type="button"
-                  onClick={() => handleNavClick('sell-car')}
-                  className={`w-full text-left px-3.5 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center justify-between cursor-pointer ${
-                    currentScreen === 'sell-car'
-                      ? 'bg-emerald-100/80 text-[#12492f]'
-                      : 'text-gray-800 hover:bg-gray-50'
-                  }`}
-                >
-                  <span className="flex items-center gap-2.5">
-                    <DollarSign size={15} className="text-emerald-700" />
-                    Sell Your Car (Instant Cash)
-                  </span>
-                  <ChevronRight size={14} className="text-gray-400" />
-                </button>
-
-                {/* Find a Car for Me (Concierge) */}
-                <button
-                  type="button"
-                  onClick={() => handleNavClick('find-car')}
-                  className={`w-full text-left px-3.5 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center justify-between cursor-pointer ${
-                    currentScreen === 'find-car'
-                      ? 'bg-emerald-100/80 text-[#12492f]'
-                      : 'text-gray-800 hover:bg-gray-50'
-                  }`}
-                >
-                  <span className="flex items-center gap-2.5">
-                    <Search size={15} className="text-emerald-700" />
-                    Find a Car for Me (Concierge)
-                  </span>
-                  <ChevronRight size={14} className="text-gray-400" />
-                </button>
-
-                {/* Live Order Tracking */}
-                <button
-                  type="button"
-                  onClick={() => handleNavClick('order-tracking')}
-                  className={`w-full text-left px-3.5 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center justify-between cursor-pointer ${
-                    currentScreen === 'order-tracking'
-                      ? 'bg-emerald-100/80 text-[#12492f]'
-                      : 'text-gray-800 hover:bg-gray-50'
-                  }`}
-                >
-                  <span className="flex items-center gap-2.5">
-                    <Clock size={15} className="text-emerald-700" />
-                    Live Ocean AIS Tracking
-                  </span>
-                  <span className="text-[10px] bg-emerald-100 text-[#12492f] font-bold px-2 py-0.5 rounded-full">
-                    GPS Active
-                  </span>
-                </button>
-
-                {/* Saved & Compare */}
-                <button
-                  type="button"
-                  onClick={() => handleNavClick('saved-compare')}
-                  className={`w-full text-left px-3.5 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center justify-between cursor-pointer ${
-                    currentScreen === 'saved-compare'
-                      ? 'bg-emerald-100/80 text-[#12492f]'
-                      : 'text-gray-800 hover:bg-gray-50'
-                  }`}
-                >
-                  <span className="flex items-center gap-2.5">
-                    <Heart size={15} className="text-emerald-700" />
-                    Saved Vehicles & Comparison
-                  </span>
-                  <span className="text-[10px] bg-gray-100 text-gray-700 font-bold px-2 py-0.5 rounded-full">
-                    {savedCount} saved
-                  </span>
-                </button>
-              </div>
-
-              {/* Account Card & Support Direct Links */}
-              <div className="pt-3 border-t border-gray-100 space-y-2">
-                {/* Account Profile / Login button */}
-                <button
-                  type="button"
-                  onClick={() => handleNavClick('auth')}
-                  className="w-full p-3 bg-[#12492f] hover:bg-emerald-800 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 shadow-xs cursor-pointer transition-colors"
-                >
-                  <User size={15} />
-                  <span>{isLoggedIn ? 'Account (Oluwasegun)' : 'Sign In / Register Account'}</span>
-                </button>
-
-                {/* 24/7 WhatsApp Chat button */}
-                <a
-                  href="https://wa.me/2348123456789"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="w-full py-2.5 px-3.5 bg-emerald-50 hover:bg-emerald-100 text-[#12492f] text-xs font-bold rounded-xl flex items-center justify-between border border-emerald-200 transition-colors"
-                >
-                  <span className="flex items-center gap-2">
-                    <MessageSquare size={15} className="text-emerald-700" />
-                    Chat on WhatsApp (24/7 Support)
-                  </span>
-                  <ChevronRight size={14} className="text-emerald-700" />
-                </a>
-
-                {/* Direct Phone Call */}
-                <a
-                  href="tel:+2348123456789"
-                  className="w-full py-2.5 px-3.5 bg-gray-50 hover:bg-gray-100 text-gray-800 text-xs font-bold rounded-xl flex items-center justify-between border border-gray-200 transition-colors"
-                >
-                  <span className="flex items-center gap-2">
-                    <Phone size={15} className="text-gray-600" />
-                    Direct Hotline: +234 812 345 6789
-                  </span>
-                  <ChevronRight size={14} className="text-gray-400" />
-                </a>
-              </div>
-            </div>
-
-            {/* Drawer Footer */}
-            <div className="p-3 bg-gray-50 border-t border-gray-200 text-center text-[11px] text-gray-500 font-medium">
-              ShabaAutos Nigeria Ltd • Tin Can Island Port, Lagos
-            </div>
-          </div>
-        </div>
-      )}
     </header>
   );
 };
